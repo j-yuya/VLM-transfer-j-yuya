@@ -9,7 +9,7 @@ import wandb
 
 from src.models.ensemble import VLMEnsemble
 from src.models.evaluators import HarmBenchEvaluator, LlamaGuard2Evaluator
-from src.utils import create_initial_image, create_intern_image
+from src.utils import create_initial_image, create_intern_image, reconstruct_to_original_size
 
 
 class AttackType(Enum):
@@ -188,22 +188,34 @@ class VLMEnsembleAttackingSystem(lightning.LightningModule):
             print(self.tensor_image.shape)
 
             log_image = self.tensor_image.detach().cpu()
-            if log_image.ndim == 5:
-                log_image = log_image.squeeze(0)
-
-            wandb.log(
-                {
-                    f"jailbreak_image_step={self.optimizer_step_counter}": wandb.Image(
-                        # https://docs.wandb.ai/ref/python/data-types/image
-                        # 0 removes the size-1 batch dimension.
-                        # The transformation doesn't accept bfloat16.
-                        data_or_path=self.convert_tensor_to_pil_image(
-                            log_image[0].to(torch.float32)
+            if any("Intern" in model for model in self.wandb_config["models_to_attack"]):
+                wandb.log(
+                    {
+                        f"jailbreak_image_step={self.optimizer_step_counter}": wandb.Image(
+                            # https://docs.wandb.ai/ref/python/data-types/image
+                            # 0 removes the size-1 batch dimension.
+                            # The transformation doesn't accept bfloat16.
+                            data_or_path=self.convert_tensor_to_pil_image(
+                                reconstruct_to_original_size(log_image.squeeze(0)).to(torch.float32)
+                            ),
+                            # caption="Adversarial Image",
                         ),
-                        # caption="Adversarial Image",
-                    ),
-                },
-            )
+                    },
+                )
+            else:
+                wandb.log(
+                    {
+                        f"jailbreak_image_step={self.optimizer_step_counter}": wandb.Image(
+                            # https://docs.wandb.ai/ref/python/data-types/image
+                            # 0 removes the size-1 batch dimension.
+                            # The transformation doesn't accept bfloat16.
+                            data_or_path=self.convert_tensor_to_pil_image(
+                                log_image[0].to(torch.float32)
+                            ),
+                            # caption="Adversarial Image",
+                        ),
+                    },
+                )
         super().optimizer_step(*args, **kwargs)
         self.optimizer_step_counter += 1
         with torch.no_grad():

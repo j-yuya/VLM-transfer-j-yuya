@@ -15,7 +15,7 @@ from typing import Any, Dict, List, Tuple
 import wandb
 from torchvision.transforms.functional import InterpolationMode
 import torchvision.transforms as T
-
+import torch.nn.functional as F
 
 from src.data import VLMEnsembleTextDataset, VLMEnsembleTextDataModule
 from src.models.ensemble import VLMEnsemble
@@ -142,6 +142,46 @@ def load_image_from_image(image_file, input_size=448, patch_grid=(1, 1), use_thu
     pixel_values = torch.stack(pixel_values)
     return pixel_values
 
+def reconstruct_to_original_size(
+    patches,
+    patch_grid=(1, 1),
+    patch_size=448,
+    orig_size=None  # (H, W)
+):
+    """
+    Reconstruct image from normalized patches and optionally resize to original size.
+    """
+    # Reconstruct resized image from patches
+    num_x, num_y = patch_grid
+    assert patches.shape[0] == num_x * num_y
+
+    mean = (0.485, 0.456, 0.406)
+    std = (0.229, 0.224, 0.225)
+    patches = unnormalize(patches, mean, std)
+
+    rows = []
+    for y in range(num_y):
+        row = torch.cat(
+            [patches[y * num_x + x] for x in range(num_x)], dim=2
+        )
+        rows.append(row)
+    full_image = torch.cat(rows, dim=1)
+
+    # Optionally resize back to original size
+    if orig_size is not None:
+        full_image = full_image.unsqueeze(0)  # (1, 3, H, W)
+        full_image = F.interpolate(
+            full_image, size=orig_size, mode="bicubic", align_corners=False
+        )
+        full_image = full_image.squeeze(0)  # (3, H_orig, W_orig)
+
+    return full_image
+
+def unnormalize(tensor, mean, std):
+    # Reverse normalization
+    mean = torch.tensor(mean).view(3, 1, 1)
+    std = torch.tensor(std).view(3, 1, 1)
+    return tensor * std + mean
 
 def instantiate_vlm_ensemble(
     model_strs: List[str],

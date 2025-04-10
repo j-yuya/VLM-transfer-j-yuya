@@ -52,7 +52,7 @@ parameters:
           - bf16-mixed
   models_to_attack:
     values:
-      - '{''InternVL2-8B''}'
+      - '{''prism-reproduction-llava-v15+13b''}'
   n_generations:
     values:
       - 30

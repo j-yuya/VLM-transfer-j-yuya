@@ -50,7 +50,7 @@ class PrismaticVisionLanguageModel(VisionLanguageModel, lightning.LightningModul
         self.generation_kwargs = generation_kwargs
 
         hf_token = (
-            Path(os.path.expandvars("$LFS_HOME/.cache/huggingface/token"))
+            Path(os.path.expandvars("/work/jcaspary/.hf_token"))
             .read_text()
             .strip()
         )
