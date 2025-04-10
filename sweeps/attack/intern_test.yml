@@ -58,7 +58,7 @@ parameters:
       - 30
   n_grad_steps:
     values:
-      - 20000
+      - 200
   optimization:
     parameters:
       eps:

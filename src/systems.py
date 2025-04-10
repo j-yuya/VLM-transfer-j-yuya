@@ -9,7 +9,7 @@ import wandb
 
 from src.models.ensemble import VLMEnsemble
 from src.models.evaluators import HarmBenchEvaluator, LlamaGuard2Evaluator
-from src.utils import create_initial_image
+from src.utils import create_initial_image, create_intern_image
 
 
 class AttackType(Enum):
@@ -30,12 +30,17 @@ class VLMEnsembleAttackingSystem(lightning.LightningModule):
             model_generation_kwargs=wandb_config["model_generation_kwargs"],
             precision=wandb_config["lightning_kwargs"]["precision"],
         )
-
-        # Load initial image plus prompt and target data.
-        tensor_image: torch.Tensor = create_initial_image(
+        if any("Intern" in model for model in wandb_config["models_to_attack"]):
+            tensor_image: torch.Tensor = create_intern_image(
             image_kwargs=wandb_config["image_kwargs"],
             seed=wandb_config["seed"],
-        )
+            )
+        else:
+            # Load initial image plus prompt and target data.
+            tensor_image: torch.Tensor = create_initial_image(
+                image_kwargs=wandb_config["image_kwargs"],
+                seed=wandb_config["seed"],
+            )
         # print(f"tensor_image.shape: {tensor_image.shape}")
         # print(f"tensor_image: {tensor_image}")
         self.tensor_image = torch.nn.Parameter(tensor_image, requires_grad=True)
@@ -138,6 +143,10 @@ class VLMEnsembleAttackingSystem(lightning.LightningModule):
         self, batch: Dict[str, Dict[str, torch.Tensor]], batch_idx: int
     ) -> torch.Tensor:
         # https://pytorch-lightning.readthedocs.io/en/latest/common/lightning_module.html#training_step
+        print("Image")
+        print(self.tensor_image.shape)
+        print(self.tensor_image)
+
         losses_per_model: Dict[str, torch.Tensor] = self.vlm_ensemble.compute_loss(
             image=self.tensor_image,
             text_data_by_model=batch,
@@ -175,6 +184,13 @@ class VLMEnsembleAttackingSystem(lightning.LightningModule):
             self.optimizer_step_counter
             % self.wandb_config["lightning_kwargs"]["log_image_every_n_steps"]
         ) == 0:
+            # TODO: Add handling for additional image dim (4)
+            print(self.tensor_image.shape)
+
+            log_image = self.tensor_image.detach().cpu()
+            if log_image.ndim == 5:
+                log_image = log_image.squeeze(0)
+
             wandb.log(
                 {
                     f"jailbreak_image_step={self.optimizer_step_counter}": wandb.Image(
@@ -182,7 +198,7 @@ class VLMEnsembleAttackingSystem(lightning.LightningModule):
                         # 0 removes the size-1 batch dimension.
                         # The transformation doesn't accept bfloat16.
                         data_or_path=self.convert_tensor_to_pil_image(
-                            self.tensor_image[0].detach().to(torch.float32)
+                            log_image[0].to(torch.float32)
                         ),
                         # caption="Adversarial Image",
                     ),

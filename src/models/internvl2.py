@@ -134,7 +134,6 @@ class InternVL2(VisionLanguageModel, lightning.LightningModule):
         labels: torch.Tensor,
     ) -> torch.Tensor:
         device = self.model.device
-        import pdb
         # Since we only get a single image, we need to repeat it for the batch size.
         assert image.ndim == 5, f"Expected 4 dims, got {image.ndim}"
         # assert that we only have one image here
@@ -143,7 +142,11 @@ class InternVL2(VisionLanguageModel, lightning.LightningModule):
         ), f"Expected only 1 image that we repeat, got {image.size(0)}"
         image = image.repeat(1, 1, 1, 1, 1)
         image_flags = torch.tensor([1] * image.shape[1], dtype=torch.long)
-        pdb.set_trace()
+        print(input_ids.shape)
+        print(image.squeeze(0).shape)
+        print(attention_mask.shape)
+
+
         outputs = self.model(
             input_ids=input_ids.to(device=device),
             pixel_values=image.squeeze(0).to(torch.bfloat16).to(device=device),
@@ -167,25 +170,27 @@ class InternVL2(VisionLanguageModel, lightning.LightningModule):
         NUM_IMAGE_TOKENS = 256
         img_context_token_id = self.tokenizer.convert_tokens_to_ids(IMG_CONTEXT_TOKEN)
         self.model.img_context_token_id = img_context_token_id
-        num_patches_list = [torch.tensor([5]) for _ in prompts]
+        num_patches_list = [torch.tensor([1]) for _ in prompts]
         self.tokenizer.padding_side = "left"
         self.tokenizer.pad_token = self.tokenizer.eos_token
         eos_token_id = self.tokenizer.convert_tokens_to_ids('<|im_end|>')
         pad_token_id = self.tokenizer.convert_tokens_to_ids(self.tokenizer.pad_token)
 
         prompt_texts = []
+        # print(num_patches_list)
+        # print(prompts)
+        # print(targets)
 
         for prompt, target, num_patches in zip(prompts, targets, num_patches_list):
             # Construct image placeholder with visual tokens
             prompt_w_image_tag = f"<image>\n{prompt}"
             query = format_instruction_internvl(prompt_w_image_tag)
-            for num_patches in num_patches_list:
-                visual_token_str = IMG_START_TOKEN + (IMG_CONTEXT_TOKEN * NUM_IMAGE_TOKENS * num_patches) + IMG_END_TOKEN
+            for num_patch in num_patches:
+                visual_token_str = IMG_START_TOKEN + (IMG_CONTEXT_TOKEN * NUM_IMAGE_TOKENS * num_patch) + IMG_END_TOKEN
                 query = query.replace('<image>', visual_token_str, 1)
-                if target is not None:
-                    query = query + target
+            if target is not None:
+                query = query + target
             #image_plus_prompt = f"{visual_token_str}\n{prompt}"
-
             prompt_texts.append(query)
         
         model_inputs = self.tokenizer(prompt_texts, padding=True, truncation=False, return_tensors='pt')
@@ -241,7 +246,7 @@ class InternVL2(VisionLanguageModel, lightning.LightningModule):
         NUM_IMAGE_TOKENS = 256
         img_context_token_id = self.tokenizer.convert_tokens_to_ids(IMG_CONTEXT_TOKEN)
         self.model.img_context_token_id = img_context_token_id
-        num_patches_list = [torch.tensor([5]) for _ in prompts]
+        num_patches_list = [torch.tensor([1]) for _ in prompts]
         self.tokenizer.padding_side = "left"
         self.tokenizer.pad_token = self.tokenizer.eos_token
         eos_token_id = self.tokenizer.convert_tokens_to_ids('<|im_end|>')
@@ -269,8 +274,7 @@ class InternVL2(VisionLanguageModel, lightning.LightningModule):
             ), "Expected generation config to be set."
             # # run the model to get the response
             # these stop words are the im_end, so they are the REAL eos
-            import pdb
-            pdb.set_trace()
+
             outputs = self.model.generate(
                 input_ids=model_inputs.input_ids.to(self.model.device),
                 pixel_values=image.squeeze(0).to(torch.bfloat16).to(self.model.device),
@@ -290,6 +294,29 @@ class InternVL2(VisionLanguageModel, lightning.LightningModule):
 
         return model_generations
 
+    def disable_model_gradients(self):       
+        # Disable gradients for the full model
+        self.model.requires_grad_(False)
+        self.model.eval()
+
+        # Vision model
+        if hasattr(self.model, "vision_model"):
+            self.model.vision_model.requires_grad_(False)
+            self.model.vision_model.eval()
+
+        # Language model
+        if hasattr(self.model, "language_model"):
+            self.model.language_model.requires_grad_(False)
+            self.model.language_model.eval()
+            if hasattr(self.model.language_model, "model"):
+                self.model.language_model.model.requires_grad_(False)
+                self.model.language_model.model.eval()
+
+        # Optional: also freeze MLP if present
+        if hasattr(self.model, "mlp1"):
+            self.model.mlp1.requires_grad_(False)
+            self.model.mlp1.eval()
+
 def only_assistant_response(starting_text: str, response: str) -> str:
     assert starting_text in response, f"Expected {starting_text} to be in {response}"
     # remove everything before and including the assistant token
@@ -298,14 +325,7 @@ def only_assistant_response(starting_text: str, response: str) -> str:
     # new_response = new_response[:-1]
     return new_response
 
-    # def disable_model_gradients(self):
-    #     self.model.requires_grad_(False)
-    #     self.model.eval()
-    #     self.model.transformer.requires_grad_(False)
-    #     self.model.transformer.eval()
-    #     self.vision_model.requires_grad_(False)
-    #     self.vision_model.eval()
-
+    
     # def to(
     #     self,
     #     device: torch.device = None,

@@ -13,6 +13,9 @@ import torch.utils.data
 import torchvision.transforms.v2
 from typing import Any, Dict, List, Tuple
 import wandb
+from torchvision.transforms.functional import InterpolationMode
+import torchvision.transforms as T
+
 
 from src.data import VLMEnsembleTextDataset, VLMEnsembleTextDataModule
 from src.models.ensemble import VLMEnsemble
@@ -65,6 +68,79 @@ def create_initial_image(image_kwargs: Dict[str, Any], seed: int = 0) -> torch.T
         )
     assert len(image.shape) == 4
     return image
+
+def create_intern_image(image_kwargs: Dict[str, Any], seed: int = 0) -> torch.Tensor:
+    if image_kwargs["image_initialization"] == "trina":
+        image_path = f"images/trina/{str(seed).zfill(3)}.jpg"
+        pil_image = Image.open(image_path, mode="r")
+        width, height = pil_image.size
+        max_dim = max(width, height)
+        pad_width = (max_dim - width) // 2
+        pad_height = (max_dim - height) // 2
+        transform_pil_image = torchvision.transforms.v2.Compose(
+            [
+                torchvision.transforms.v2.Pad(
+                    (pad_width, pad_height, pad_width, pad_height), fill=0
+                ),
+                torchvision.transforms.v2.Resize(
+                    (image_kwargs["image_size"], image_kwargs["image_size"])
+                ),
+            ]
+        )
+        image = transform_pil_image(pil_image)
+        image = load_image_from_image(image, image_kwargs["image_size"], (1,1), True).unsqueeze(0)
+        print(image.shape)
+        assert len(image.shape) == 5
+        return image
+
+
+def build_transform(input_size):
+    IMAGENET_MEAN = (0.485, 0.456, 0.406)
+    IMAGENET_STD = (0.229, 0.224, 0.225)
+    transform = T.Compose([
+        T.Lambda(lambda img: img.convert('RGB') if img.mode != 'RGB' else img),
+        T.Resize((input_size, input_size), interpolation=InterpolationMode.BICUBIC),
+        T.ToTensor(),
+        T.Normalize(mean=IMAGENET_MEAN, std=IMAGENET_STD)
+    ])
+    return transform
+
+
+def dynamic_preprocess(image, patch_grid=(1, 1), image_size=448, use_thumbnail=False):
+    num_patches_x, num_patches_y = patch_grid
+    target_width = image_size * num_patches_x
+    target_height = image_size * num_patches_y
+    blocks = num_patches_x * num_patches_y
+
+    resized_img = image.resize((target_width, target_height))
+    processed_images = []
+    for i in range(blocks):
+        box = (
+            (i % num_patches_x) * image_size,
+            (i // num_patches_x) * image_size,
+            ((i % num_patches_x) + 1) * image_size,
+            ((i // num_patches_x) + 1) * image_size
+        )
+        split_img = resized_img.crop(box)
+        processed_images.append(split_img)
+
+    if use_thumbnail and blocks != 1:
+        thumbnail_img = image.resize((image_size, image_size))
+        processed_images.append(thumbnail_img)
+
+    return processed_images
+
+def load_image_from_image(image_file, input_size=448, patch_grid=(1, 1), use_thumbnail=True):
+    transform = build_transform(input_size=448)
+    images = dynamic_preprocess(
+        image_file,
+        image_size=input_size,
+        patch_grid=patch_grid,
+        use_thumbnail=use_thumbnail
+    )
+    pixel_values = [transform(image) for image in images]
+    pixel_values = torch.stack(pixel_values)
+    return pixel_values
 
 
 def instantiate_vlm_ensemble(
