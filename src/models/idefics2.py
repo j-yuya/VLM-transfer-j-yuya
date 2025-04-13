@@ -23,9 +23,10 @@ class Idefics2VisionLanguageModel(VisionLanguageModel, lightning.LightningModule
         model_str: str = "idefics2-8b",
         generation_kwargs: Dict[str, Any] = None,
         precision: str = "bf16-mixed",
+        image_size: int = 448,
     ):
         # https://huggingface.co/HuggingFaceM4/idefics2-8b
-        super(Idefics2VisionLanguageModel, self).__init__()
+        super(Idefics2VisionLanguageModel, self).__init__(image_size)
 
         if generation_kwargs is None:
             generation_kwargs = {

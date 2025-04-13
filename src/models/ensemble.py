@@ -28,6 +28,7 @@ class VLMEnsemble(lightning.LightningModule):
         model_strs: List[str],
         model_generation_kwargs: Dict[str, Dict[str, Any]],
         precision: str = "bf16-mixed",
+        image_size: int = 448,
     ):
         super().__init__()
         self.vlms_dict: Dict[str, VisionLanguageModel] = {}
@@ -69,6 +70,7 @@ class VLMEnsemble(lightning.LightningModule):
                 vlm = Idefics2VisionLanguageModel(
                     model_str=model_str,
                     generation_kwargs=generation_kwargs,
+                    image_size=image_size
                 )
 
             # Load Instruct BLIP models.
@@ -87,7 +89,7 @@ class VLMEnsemble(lightning.LightningModule):
                     raise ValueError("Invalid model_str: {}".format(model_str))
 
                 vlm = InstructBlipVisionLanguageModel(
-                    huggingface_name=huggingface_name,
+                    huggingface_name=huggingface_name, image_size=image_size
                 )
 
             elif (
@@ -99,6 +101,7 @@ class VLMEnsemble(lightning.LightningModule):
                     model_str=model_str,
                     generation_kwargs=generation_kwargs,
                     precision=precision,
+                    image_size=image_size
                 )
             elif model_str.startswith("llava"):
                 from src.models.llava import LlavaVisionLanguageModel
@@ -106,6 +109,7 @@ class VLMEnsemble(lightning.LightningModule):
                 vlm = LlavaVisionLanguageModel(
                     model_str=model_str,
                     generation_kwargs=generation_kwargs,
+                    image_size=image_size
                 )
 
             elif model_str.startswith("deepseek"):
@@ -115,6 +119,7 @@ class VLMEnsemble(lightning.LightningModule):
                     model_str=model_str,
                     generation_kwargs=generation_kwargs,
                     precision=precision,
+                    image_size=image_size
                 )
             elif model_str.startswith("Qwen"):
                 from src.models.qwen import QwenVisionLanguageModel
@@ -123,6 +128,7 @@ class VLMEnsemble(lightning.LightningModule):
                     model_str=model_str,
                     generation_kwargs=generation_kwargs,
                     precision=precision,
+                    image_size=image_size
                 )
             elif model_str.startswith("xgen"):
                 from src.models.xgen import XgenVisionLanguageModel
@@ -131,6 +137,7 @@ class VLMEnsemble(lightning.LightningModule):
                     model_str=model_str,
                     generation_kwargs=generation_kwargs,
                     precision=precision,
+                    image_size=image_size
                 )
             elif model_str.startswith("Intern"):
                 from src.models.internvl2 import InternVL2
@@ -138,6 +145,15 @@ class VLMEnsemble(lightning.LightningModule):
                     model_str=model_str,
                     generation_kwargs=generation_kwargs,
                     precision=precision,
+                    image_size=image_size
+                                )
+            elif model_str.startswith("cogvlm2"):
+                from src.models.cogvlm2 import CogVLM2
+                vlm = CogVLM2(
+                    model_str=model_str,
+                    generation_kwargs=generation_kwargs,
+                    precision=precision,
+                    image_size=image_size
                                 )
             else:
                 raise ValueError("Invalid model_str: {}".format(model_str))

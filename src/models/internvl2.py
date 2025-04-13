@@ -72,8 +72,9 @@ class InternVL2(VisionLanguageModel, lightning.LightningModule):
         model_str: str = "InternVL2-8B",
         generation_kwargs: Mapping[str, Any] | None = None,
         precision: str = "bf16-mixed",
+        image_size: int = 448,
     ):
-        super().__init__()
+        super().__init__(image_size)
         self.already_logged_new_mask: bool = False  # For print debugigng
         self.already_logged_text: bool = False  # For print debugigng
         if generation_kwargs is None:

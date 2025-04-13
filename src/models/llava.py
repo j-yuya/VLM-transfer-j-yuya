@@ -30,8 +30,9 @@ class LlavaVisionLanguageModel(VisionLanguageModel):
         model_str: str = "llava-v1p5-vicuna7b",
         generation_kwargs: Dict[str, Any] = None,
         accelerator: Optional[Accelerator] = None,
+        image_size: int = 448,
     ):
-        super(LlavaVisionLanguageModel, self).__init__()
+        super(LlavaVisionLanguageModel, self).__init__(image_size)
         self.model_str = model_str
         if model_str.endswith("v1p5-vicuna7b"):
             huggingface_name = "liuhaotian/llava-v1.5-7b"

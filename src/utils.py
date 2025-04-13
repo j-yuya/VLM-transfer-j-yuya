@@ -16,7 +16,7 @@ import wandb
 from torchvision.transforms.functional import InterpolationMode
 import torchvision.transforms as T
 import torch.nn.functional as F
-
+from torchvision import transforms
 from src.data import VLMEnsembleTextDataset, VLMEnsembleTextDataModule
 from src.models.ensemble import VLMEnsemble
 from src.image_handling import get_list_image
@@ -92,6 +92,42 @@ def create_intern_image(image_kwargs: Dict[str, Any], seed: int = 0) -> torch.Te
         print(image.shape)
         assert len(image.shape) == 5
         return image
+    
+def create_cog_image(image_kwargs: Dict[str, Any], seed: int = 0) -> torch.Tensor:
+    if image_kwargs["image_initialization"] == "NIPS17":
+        image = get_list_image("old/how_robust_is_bard/src/dataset/NIPS17")
+        # resizer = transforms.Resize((224, 224))
+        # images = torch.stack(
+        #     [resizer(i).unsqueeze(0).to(torch.float16) for i in images]
+        # )
+        # # Only use one image for one attack.
+        # images: torch.Tensor = images[image_kwargs["datum_index"]].unsqueeze(0)
+        raise NotImplementedError
+    elif image_kwargs["image_initialization"] == "random":
+        image_size = 1344
+        image: torch.Tensor = torch.rand((3, image_size, image_size))
+    elif image_kwargs["image_initialization"] == "trina":
+        image_size = 1344
+        image_path = f"images/trina/{str(seed).zfill(3)}.jpg"
+        pil_image = Image.open(image_path, mode="r")
+        transform = transforms.Compose(
+            [
+                transforms.Resize(
+                    (image_size, image_size), interpolation=transforms.InterpolationMode.BICUBIC
+                ),
+                transforms.ToTensor(),
+                transforms.Normalize((0.48145466, 0.4578275, 0.40821073), (0.26862954, 0.26130258, 0.27577711)),
+            ]
+        )
+        image: torch.Tensor = transform(pil_image)
+    else:
+        raise ValueError(
+            "Invalid image_initialization: {}".format(
+                image_kwargs["image_initialization_str"]
+            )
+        )
+    assert len(image.shape) == 3
+    return image
 
 
 def build_transform(input_size):
@@ -311,3 +347,26 @@ def set_seed(seed=1):
         cudnn.deterministic = True
     except ImportError:
         pass
+
+def cog_reverse_image(tensor: torch.Tensor) -> Image.Image:
+    """
+    Reverses the normalization and tensor-to-PIL conversion
+    for a 3xHxW image tensor. Assumes CogVLM-style normalization.
+    """
+    # Mean and std from the original transform
+    mean = [0.48145466, 0.4578275, 0.40821073]
+    std = [0.26862954, 0.26130258, 0.27577711]
+
+    # Inverse normalization
+    inv_mean = [-m / s for m, s in zip(mean, std)]
+    inv_std = [1 / s for s in std]
+
+    inverse_normalize = transforms.Normalize(mean=inv_mean, std=inv_std)
+
+    # Apply inverse normalization
+    tensor = inverse_normalize(tensor.clone())  # clone to avoid modifying original
+
+    # Clamp to valid range [0, 1]
+    tensor = torch.clamp(tensor, 0.0, 1.0)
+
+    return tensor

@@ -9,7 +9,7 @@ import wandb
 
 from src.models.ensemble import VLMEnsemble
 from src.models.evaluators import HarmBenchEvaluator, LlamaGuard2Evaluator
-from src.utils import create_initial_image, create_intern_image, reconstruct_to_original_size
+from src.utils import create_initial_image, create_intern_image, reconstruct_to_original_size, create_cog_image, cog_reverse_image
 
 
 class AttackType(Enum):
@@ -29,9 +29,15 @@ class VLMEnsembleAttackingSystem(lightning.LightningModule):
             model_strs=wandb_config["models_to_attack"],
             model_generation_kwargs=wandb_config["model_generation_kwargs"],
             precision=wandb_config["lightning_kwargs"]["precision"],
+            image_size=wandb_config["image_kwargs"]["image_size"]
         )
         if any("Intern" in model for model in wandb_config["models_to_attack"]):
             tensor_image: torch.Tensor = create_intern_image(
+            image_kwargs=wandb_config["image_kwargs"],
+            seed=wandb_config["seed"],
+            )
+        elif any("cogvlm2" in model for model in wandb_config["models_to_attack"]):
+            tensor_image: torch.Tensor = create_cog_image(
             image_kwargs=wandb_config["image_kwargs"],
             seed=wandb_config["seed"],
             )
@@ -202,6 +208,20 @@ class VLMEnsembleAttackingSystem(lightning.LightningModule):
                         ),
                     },
                 )
+            elif any("cogvlm2" in model for model in self.wandb_config["models_to_attack"]):
+                wandb.log(
+                    {
+                        f"jailbreak_image_step={self.optimizer_step_counter}": wandb.Image(
+                            # https://docs.wandb.ai/ref/python/data-types/image
+                            # 0 removes the size-1 batch dimension.
+                            # The transformation doesn't accept bfloat16.
+                            data_or_path=self.convert_tensor_to_pil_image(
+                                cog_reverse_image(log_image).to(torch.float32)
+                            ),
+                            # caption="Adversarial Image",
+                        ),
+                    },
+                )
             else:
                 wandb.log(
                     {
@@ -233,6 +253,7 @@ class VLMEnsembleEvaluatingSystem(lightning.LightningModule):
         self.vlm_ensemble = VLMEnsemble(
             model_strs=wandb_config["model_to_eval"],
             model_generation_kwargs=wandb_config["model_generation_kwargs"],
+            image_size=wandb_config["image_kwargs"]["image_size"]
         )
         self.tensor_image = torch.nn.Parameter(tensor_image, requires_grad=False)
         self.wandb_additional_data = {}

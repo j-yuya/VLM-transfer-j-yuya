@@ -45,8 +45,9 @@ class QwenVisionLanguageModel(VisionLanguageModel, lightning.LightningModule):
         model_str: str = "Qwen-VL-Chat",
         generation_kwargs: Mapping[str, Any] | None = None,
         precision: str = "bf16-mixed",
+        image_size: int = 448,
     ):
-        super().__init__()
+        super().__init__(image_size)
 
         if generation_kwargs is None:
             generation_kwargs = {

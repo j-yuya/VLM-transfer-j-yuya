@@ -83,8 +83,9 @@ class XgenVisionLanguageModel(VisionLanguageModel, lightning.LightningModule):
         model_str: str = "xgen-mm-phi3-mini-instruct-r-v1",
         generation_kwargs: Mapping[str, Any] | None = None,
         precision: str = "bf16-mixed",
+        image_size: int = 448,
     ):
-        super().__init__()
+        super().__init__(image_size)
 
         if generation_kwargs is None:
             generation_kwargs = {

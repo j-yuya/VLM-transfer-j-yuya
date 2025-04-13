@@ -5,8 +5,9 @@ from typing import List, Optional
 
 
 class VisionLanguageModel(abc.ABC, lightning.LightningModule):
-    def __init__(self):
+    def __init__(self, image_size=448):
         super().__init__()
+        self.image_size = image_size
 
     @abc.abstractmethod
     def compute_loss(

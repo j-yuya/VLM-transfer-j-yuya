@@ -29,8 +29,9 @@ class PrismaticVisionLanguageModel(VisionLanguageModel, lightning.LightningModul
         model_str: str = "prism-dinosiglip+7b",
         generation_kwargs: Dict[str, Any] = None,
         precision: str = "bf16-mixed",
+        image_size: int = 448,
     ):
-        super(PrismaticVisionLanguageModel, self).__init__()
+        super(PrismaticVisionLanguageModel, self).__init__(image_size)
 
         if generation_kwargs is None:
             generation_kwargs = {
