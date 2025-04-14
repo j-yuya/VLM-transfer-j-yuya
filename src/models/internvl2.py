@@ -1,5 +1,4 @@
 # Based on the models at https://github.com/TRI-ML/prismatic-vlms?tab=readme-ov-file.
-from src.models.label_compute import make_labels
 from src.models.qwen_utils.modeling_qwen import QWenLMHeadModel
 from transformers import AutoTokenizer, AutoModel
 import lightning
@@ -193,7 +192,7 @@ class InternVL2(VisionLanguageModel, lightning.LightningModule):
                 visual_token_str = IMG_START_TOKEN + (IMG_CONTEXT_TOKEN * NUM_IMAGE_TOKENS * num_patch) + IMG_END_TOKEN
                 query = query.replace('<image>', visual_token_str, 1)
             if target is not None:
-                query = query + target
+                query = query + target + "<|im_end|>"
             #image_plus_prompt = f"{visual_token_str}\n{prompt}"
             prompt_texts.append(query)
         
@@ -328,6 +327,45 @@ def only_assistant_response(starting_text: str, response: str) -> str:
     # # remove the final \n
     # new_response = new_response[:-1]
     return new_response
+
+IGNORE_INDEX = -100  # standard for ignoring in loss
+
+def make_labels(
+    input_ids: torch.Tensor, 
+    pad_token_id: int, 
+    targets: list[str], 
+    tokenizer
+):
+    labels = input_ids.clone()
+    labels[:] = IGNORE_INDEX  # mask everything by default
+
+    # Tokenize targets individually to get length
+    tokenized_targets = tokenizer(targets, add_special_tokens=False).input_ids
+
+    for i, target_ids in enumerate(tokenized_targets):
+        # Locate the position where the target begins
+        # Assumption: target is always at the *end* of the input, followed by <|im_end|>
+        # So we place the labels on the correct slice at the end
+
+        target_len = len(target_ids)
+        # Try to find the slice [.... target tokens ..., <|im_end|>] at the end
+        end_token_id = tokenizer.convert_tokens_to_ids("<|im_end|>")
+        sequence = input_ids[i].tolist()
+
+        # Try to locate <|im_end|> at the end
+        try:
+            im_end_index = sequence[::-1].index(end_token_id)
+            im_end_index = len(sequence) - 1 - im_end_index
+        except ValueError:
+            raise ValueError("Could not find <|im_end|> token in input_ids")
+
+        target_start = im_end_index - target_len
+        labels[i, target_start:im_end_index] = input_ids[i, target_start:im_end_index]
+
+    # Padding tokens stay ignored
+    labels[input_ids == pad_token_id] = IGNORE_INDEX
+    return labels
+
 
     
     # def to(
