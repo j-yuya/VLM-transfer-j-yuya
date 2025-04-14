@@ -142,6 +142,10 @@ class PrismaticVisionLanguageModel(VisionLanguageModel, lightning.LightningModul
         transformed_images: Union[
             torch.Tensor, Dict[str, torch.Tensor]
         ] = self.images_transform_fn(images)
+        print(input_ids.shape)
+        print(attention_mask.shape)
+        print(labels.shape)
+        print(transformed_images.shape)
         outputs = self.model(
             input_ids=input_ids,
             attention_mask=attention_mask,

@@ -143,9 +143,12 @@ class InternVL2(VisionLanguageModel, lightning.LightningModule):
         ), f"Expected only 1 image that we repeat, got {image.size(0)}"
         image = image.repeat(1, 1, 1, 1, 1)
         image_flags = torch.tensor([1] * image.shape[1], dtype=torch.long)
-        print(input_ids.shape)
+        
         print(image.squeeze(0).shape)
         print(attention_mask.shape)
+        print(input_ids.shape)
+        print(attention_mask.shape)
+        print(image_flags.shape)
 
 
         outputs = self.model(

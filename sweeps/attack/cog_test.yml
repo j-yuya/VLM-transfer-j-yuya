@@ -11,6 +11,8 @@ parameters:
       dataset:
         values:
           - advbench
+          - generated
+          - rylan_anthropic_hhh
       num_workers:
         values:
           - 4
@@ -53,10 +55,10 @@ parameters:
       - '{''cogvlm2-llama3-chat-19B''}'
   n_generations:
     values:
-      - 10
+      - 30
   n_grad_steps:
     values:
-      - 20
+      - 2000
   optimization:
     parameters:
       eps:

@@ -108,11 +108,19 @@ class VLMEnsembleTextDataset(torch.utils.data.Dataset):
                 f"tokenized_datum_idx={str(idx).zfill(6)}.npz",
             )
             datum_npz = np.load(datum_file_path)
-            datum_per_vlm[vlm_name] = {
-                "input_ids": datum_npz["input_ids"],
-                "attention_mask": datum_npz["attention_mask"],
-                "labels": datum_npz["labels"],
+            if "token_type_ids" in datum_npz:
+                datum_per_vlm[vlm_name] = {
+                    "input_ids": datum_npz["input_ids"],
+                    "attention_mask": datum_npz["attention_mask"],
+                    "labels": datum_npz["labels"],
+                    "token_type_ids": datum_npz["token_type_ids"]
             }
+            else:
+                datum_per_vlm[vlm_name] = {
+                    "input_ids": datum_npz["input_ids"],
+                    "attention_mask": datum_npz["attention_mask"],
+                    "labels": datum_npz["labels"],
+                }
             datum_npz.close()
         return datum_per_vlm
 
@@ -271,10 +279,15 @@ def tokenize_prompts_and_targets_using_vlm_ensemble(
                 f"tokenized_datum_idx={str(datum_idx).zfill(6)}.npz",
             )
             if not os.path.isfile(datum_file_path):
-                np.savez(
-                    file=datum_file_path,
-                    input_ids=tokenized_data["input_ids"][datum_idx].numpy(),
-                    attention_mask=tokenized_data["attention_mask"][datum_idx].numpy(),
-                    labels=tokenized_data["labels"][datum_idx].numpy(),
-                )
+                data_kwargs = {
+                    "input_ids": tokenized_data["input_ids"][datum_idx].numpy(),
+                    "attention_mask": tokenized_data["attention_mask"][datum_idx].numpy(),
+                    "labels": tokenized_data["labels"][datum_idx].numpy(),
+                }
+                # Optionally add token_label_ids if present
+                print(tokenized_data.keys())
+                if "token_type_ids" in tokenized_data.keys():
+                    data_kwargs["token_type_ids"] = tokenized_data["token_type_ids"][datum_idx].numpy()
+                np.savez(file=datum_file_path, **data_kwargs)
+                
     return tokenized_dir_path

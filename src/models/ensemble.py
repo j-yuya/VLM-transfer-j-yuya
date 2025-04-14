@@ -252,24 +252,44 @@ class VLMEnsemble(lightning.LightningModule):
             #     attention_mask=attention_mask,
             #     labels=labels,
             # )
-
-            # Implementation #3.
-            handles[model_name] = torch.jit.fork(
-                model_wrapper.compute_loss,
-                image=image.to(model_wrapper_device, non_blocking=non_blocking),
-                input_ids=text_data_by_model[model_name]["input_ids"].to(
-                    model_wrapper_device,
-                    non_blocking=non_blocking,
-                ),
-                attention_mask=text_data_by_model[model_name]["attention_mask"].to(
-                    model_wrapper_device,
-                    non_blocking=non_blocking,
-                ),
-                labels=text_data_by_model[model_name]["labels"].to(
-                    model_wrapper_device,
-                    non_blocking=non_blocking,
-                ),
-            )
+            if "cog" in model_name:
+                handles[model_name] = torch.jit.fork(
+                    model_wrapper.compute_loss,
+                    image=image.to(model_wrapper_device, non_blocking=non_blocking),
+                    input_ids=text_data_by_model[model_name]["input_ids"].to(
+                        model_wrapper_device,
+                        non_blocking=non_blocking,
+                    ),
+                    attention_mask=text_data_by_model[model_name]["attention_mask"].to(
+                        model_wrapper_device,
+                        non_blocking=non_blocking,
+                    ),
+                    labels=text_data_by_model[model_name]["labels"].to(
+                        model_wrapper_device,
+                        non_blocking=non_blocking,
+                    ),
+                    token_type_ids=text_data_by_model[model_name]["token_type_ids"].to(
+                        model_wrapper_device,
+                        non_blocking=non_blocking,
+                    ),
+                )
+            else:
+                handles[model_name] = torch.jit.fork(
+                    model_wrapper.compute_loss,
+                    image=image.to(model_wrapper_device, non_blocking=non_blocking),
+                    input_ids=text_data_by_model[model_name]["input_ids"].to(
+                        model_wrapper_device,
+                        non_blocking=non_blocking,
+                    ),
+                    attention_mask=text_data_by_model[model_name]["attention_mask"].to(
+                        model_wrapper_device,
+                        non_blocking=non_blocking,
+                    ),
+                    labels=text_data_by_model[model_name]["labels"].to(
+                        model_wrapper_device,
+                        non_blocking=non_blocking,
+                    ),
+                )
 
         # # Collect results from all models
         for model_name, handle in handles.items():

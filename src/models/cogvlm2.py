@@ -30,7 +30,7 @@ class CogVLM2(VisionLanguageModel, lightning.LightningModule):
     ):
         super().__init__(image_size)
         self.already_logged_new_mask: bool = False  # For print debugigng
-        self.already_logged_text: bool = False  # For print debugigng
+        self.already_logged_text: bool = True  # For print debugigng
         if generation_kwargs is None:
             generation_kwargs = {
                 "temperature": 0.1,
@@ -85,13 +85,20 @@ class CogVLM2(VisionLanguageModel, lightning.LightningModule):
         device = self.model.device
 
         # Verify input image shape
-        assert image.ndim == 4, f"Expected 4D image tensor, got {image.ndim}"
-        assert image.size(0) == 1, f"Expected a single image (B=1), got {image.size(0)}"
+        assert image.ndim == 3, f"Expected 4D image tensor, got {image.ndim}"
+        #assert image.size(0) == 1, f"Expected a single image (B=1), got {image.size(0)}"
 
         # Repeat image for each batch sample and wrap in list for multimodal input
         B = input_ids.size(0)
         repeated_image = image.repeat(B, 1, 1, 1)  # [B, C, H, W]
-        images = [img.to(torch.bfloat16).to(device=device) for img in repeated_image]  # List[Tensor]
+        images = [[img.to(torch.bfloat16).to(device=device)] for img in repeated_image]
+
+        # print(image)
+        # print(image.shape)
+        # print(input_ids.shape)
+        # print(attention_mask.shape)
+        # print(token_type_ids.shape)
+        # print(labels.shape)
 
         outputs = self.model(
             input_ids=input_ids.to(device),
@@ -117,7 +124,7 @@ class CogVLM2(VisionLanguageModel, lightning.LightningModule):
             answers=targets,
         )
         results = input_by_model
-        print(input_by_model)
+        print(input_by_model.keys())
         if not self.already_logged_text:
             torch.set_printoptions(threshold=10000)
             # first_text = prompt_texts[0]
@@ -141,22 +148,24 @@ class CogVLM2(VisionLanguageModel, lightning.LightningModule):
     def generate(self, image: torch.Tensor, prompts: List[str]) -> List[str]:
         # We should only have a single image.
         
-        assert image.shape[0] == 1, print(image.shape[0])
+        #assert image.shape[0] == 1, print(image.shape[0])
         assert image.ndim == 3, f"Expected (1, 3, H, W), got {image.shape}"
         # we have (1, 3, h,w) , we want (3, H, W)
         model_generations = []
 
         for prompt in prompts:
-            model_inputs = self.build_conversation_input_ids(self.tokenizer, queries=[prompt], template_version="Chat")
-            generated_text = self.model.generate(
-                input_ids=model_inputs.input_ids.to(self.model.device),
-                attention_mask=model_inputs.attention_mask.to(self.model.device),
-                token_type_ids=model_inputs.token_type_ids.to(self.model.device),
+            model_inputs = self.build_conversation_input_ids(self.tokenizer, queries=[prompt], template_version="chat")
+            generated_ids = self.model.generate(
+                input_ids=model_inputs["input_ids"].to(self.model.device),
+                attention_mask=model_inputs["attention_mask"].to(self.model.device),
+                token_type_ids=model_inputs["token_type_ids"].to(self.model.device),
                 images = [[image.to(torch.bfloat16).to(self.model.device)]],
                 do_sample=True if self.generation_kwargs["temperature"] > 0 else False,
                 **self.generation_kwargs,
             )
-            model_generations.append(generated_text)
+            trimmed_gen_ids = generated_ids[:, model_inputs['input_ids'].shape[1]:]
+            response = self.tokenizer.decode(trimmed_gen_ids[0])
+            model_generations.append(response)
         return model_generations
         
 

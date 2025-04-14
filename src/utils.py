@@ -107,11 +107,19 @@ def create_cog_image(image_kwargs: Dict[str, Any], seed: int = 0) -> torch.Tenso
         image_size = 1344
         image: torch.Tensor = torch.rand((3, image_size, image_size))
     elif image_kwargs["image_initialization"] == "trina":
-        image_size = 1344
         image_path = f"images/trina/{str(seed).zfill(3)}.jpg"
         pil_image = Image.open(image_path, mode="r")
+        width, height = pil_image.size
+        max_dim = max(width, height)
+        pad_width = (max_dim - width) // 2
+        pad_height = (max_dim - height) // 2
+        image_size = 1344
+        
         transform = transforms.Compose(
             [
+                torchvision.transforms.v2.Pad(
+                    (pad_width, pad_height, pad_width, pad_height), fill=0
+                ),
                 transforms.Resize(
                     (image_size, image_size), interpolation=transforms.InterpolationMode.BICUBIC
                 ),
