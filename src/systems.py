@@ -9,7 +9,7 @@ import wandb
 
 from src.models.ensemble import VLMEnsemble
 from src.models.evaluators import HarmBenchEvaluator, LlamaGuard2Evaluator
-from src.utils import create_initial_image, create_intern_image, reconstruct_to_original_size, create_cog_image, cog_reverse_image
+from src.utils import create_initial_image, create_intern_image, reconstruct_to_original_size, create_cog_image, cog_reverse_image, create_minicpm_image, reconstruct_cpm_image
 
 
 class AttackType(Enum):
@@ -24,6 +24,7 @@ class VLMEnsembleAttackingSystem(lightning.LightningModule):
         wandb_config: Dict[str, Any],
     ):
         super().__init__()
+        tgt_sizes = None
         self.wandb_config = wandb_config
         self.vlm_ensemble = VLMEnsemble(
             model_strs=wandb_config["models_to_attack"],
@@ -41,6 +42,11 @@ class VLMEnsembleAttackingSystem(lightning.LightningModule):
             image_kwargs=wandb_config["image_kwargs"],
             seed=wandb_config["seed"],
             )
+        elif any("MiniCPM" in model for model in wandb_config["models_to_attack"]):
+            tensor_image, tgt_sizes = create_minicpm_image(
+            image_kwargs=wandb_config["image_kwargs"],
+            seed=wandb_config["seed"],
+            )
         else:
             # Load initial image plus prompt and target data.
             tensor_image: torch.Tensor = create_initial_image(
@@ -49,6 +55,8 @@ class VLMEnsembleAttackingSystem(lightning.LightningModule):
             )
         # print(f"tensor_image.shape: {tensor_image.shape}")
         # print(f"tensor_image: {tensor_image}")
+        if tgt_sizes != None:
+            self.tgt_sizes = tgt_sizes
         self.tensor_image = torch.nn.Parameter(tensor_image, requires_grad=True)
         self.convert_tensor_to_pil_image = torchvision.transforms.ToPILImage()
         self.optimizer_step_counter = 0
@@ -217,6 +225,22 @@ class VLMEnsembleAttackingSystem(lightning.LightningModule):
                             # The transformation doesn't accept bfloat16.
                             data_or_path=self.convert_tensor_to_pil_image(
                                 cog_reverse_image(log_image).to(torch.float32)
+                            ),
+                            # caption="Adversarial Image",
+                        ),
+                    },
+                )
+            elif any("MiniCPM" in model for model in self.wandb_config["models_to_attack"]):
+                rec_image = reconstruct_cpm_image(log_image, self.tgt_sizes)
+                print(rec_image.shape)
+                wandb.log(
+                    {
+                        f"jailbreak_image_step={self.optimizer_step_counter}": wandb.Image(
+                            # https://docs.wandb.ai/ref/python/data-types/image
+                            # 0 removes the size-1 batch dimension.
+                            # The transformation doesn't accept bfloat16.
+                            data_or_path=self.convert_tensor_to_pil_image(
+                                reconstruct_cpm_image(log_image, self.tgt_sizes).to(torch.float32)
                             ),
                             # caption="Adversarial Image",
                         ),

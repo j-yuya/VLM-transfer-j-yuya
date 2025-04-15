@@ -20,7 +20,8 @@ from torchvision import transforms
 from src.data import VLMEnsembleTextDataset, VLMEnsembleTextDataModule
 from src.models.ensemble import VLMEnsemble
 from src.image_handling import get_list_image
-
+from transformers import AutoProcessor
+from transformers.utils import TensorType
 
 def calc_rank():
     if not is_dist_avail_and_initialized():
@@ -137,8 +138,102 @@ def create_cog_image(image_kwargs: Dict[str, Any], seed: int = 0) -> torch.Tenso
     assert len(image.shape) == 3
     return image
 
+def create_minicpm_image(image_kwargs: Dict[str, Any], seed: int = 0) -> torch.Tensor:
+    if image_kwargs["image_initialization"] == "NIPS17":
+        image = get_list_image("old/how_robust_is_bard/src/dataset/NIPS17")
+        # resizer = transforms.Resize((224, 224))
+        # images = torch.stack(
+        #     [resizer(i).unsqueeze(0).to(torch.float16) for i in images]
+        # )
+        # # Only use one image for one attack.
+        # images: torch.Tensor = images[image_kwargs["datum_index"]].unsqueeze(0)
+        raise NotImplementedError
+    elif image_kwargs["image_initialization"] == "random":
+        image_size = image_kwargs["image_size"]
+        image: torch.Tensor = torch.rand((3, image_size, image_size))
+    elif image_kwargs["image_initialization"] == "trina":
+        image_path = f"images/trina/{str(seed).zfill(3)}.jpg"
+        pil_image = Image.open(image_path, mode="r")
+        width, height = pil_image.size
+        max_dim = max(width, height)
+        pad_width = (max_dim - width) // 2
+        pad_height = (max_dim - height) // 2
+        image_size = image_kwargs["image_size"]
+        
+        transform = transforms.Compose(
+            [
+                torchvision.transforms.v2.Pad(
+                    (pad_width, pad_height, pad_width, pad_height), fill=0
+                ),
+                transforms.Resize(
+                    (image_size, image_size), interpolation=transforms.InterpolationMode.BICUBIC
+                ),
+                transforms.ToTensor(),
+            ]
+        )
+        image: torch.Tensor = transform(pil_image)
 
-def build_transform(input_size):
+        processor = AutoProcessor.from_pretrained("openbmb/MiniCPM-V-2_6", trust_remote_code=True)
+        do_pad = True
+        max_slice_nums = None
+        return_tensors = TensorType.PYTORCH
+        processed_image =processor.image_processor([[image]], do_pad=do_pad, max_slice_nums=max_slice_nums, return_tensors=return_tensors)
+        pixel_values = processed_image["pixel_values"][0][0]
+        tgt_sizes = processed_image["tgt_sizes"][0][0]
+    else:
+        raise ValueError(
+            "Invalid image_initialization: {}".format(
+                image_kwargs["image_initialization_str"]
+            )
+        )
+    assert len(pixel_values.shape) == 3
+    return pixel_values, tgt_sizes
+
+from typing import Tuple
+
+def reconstruct_cpm_image(
+    patch_tensor: torch.Tensor,
+    tgt_size: torch.Tensor,  # [H_patches, W_patches]
+    patch_size: int = 14,
+    mean: Tuple[float, float, float] = (0.5, 0.5, 0.5),
+    std: Tuple[float, float, float] = (0.5, 0.5, 0.5),
+) -> torch.Tensor:
+    """
+    Reconstructs image from [3, patch_size, N_patches] using F.fold.
+    """
+    C, P, total_columns = patch_tensor.shape
+    assert P == patch_size, f"Expected patch size {patch_size}, got {P}"
+
+    # Inferred patch count
+    N = total_columns // patch_size
+    H_patches, W_patches = tgt_size.tolist()
+    assert H_patches * W_patches == N, f"Patch count mismatch: {H_patches}x{W_patches} != {N}"
+
+    print(f">> patch_tensor.shape: {patch_tensor.shape}")
+    print(f">> Inferred patch count: {N}")
+    print(f">> Target patches: {H_patches}x{W_patches} = {H_patches * W_patches}")
+    print(f">> Output image size: {H_patches * patch_size} x {W_patches * patch_size}")
+
+    # Reverse reshape_by_patch
+    patches = patch_tensor.view(C, patch_size, patch_size, N).permute(0, 3, 1, 2)  # [C, N, P, P]
+    patches = patches.reshape(1, C * patch_size * patch_size, N)  # [1, C*P*P, N]
+
+    # Reconstruct image
+    output_h = H_patches * patch_size
+    output_w = W_patches * patch_size
+    reconstructed = F.fold(
+        patches,
+        output_size=(output_h, output_w),
+        kernel_size=patch_size,
+        stride=patch_size
+    )[0]  # remove batch dim → [C, H, W]
+
+    # Unnormalize
+    mean_tensor = torch.tensor(mean, device=reconstructed.device).view(-1, 1, 1)
+    std_tensor = torch.tensor(std, device=reconstructed.device).view(-1, 1, 1)
+    reconstructed = reconstructed * std_tensor + mean_tensor
+
+    return reconstructed.clamp(0, 1)
     IMAGENET_MEAN = (0.485, 0.456, 0.406)
     IMAGENET_STD = (0.229, 0.224, 0.225)
     transform = T.Compose([

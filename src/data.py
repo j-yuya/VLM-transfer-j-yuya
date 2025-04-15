@@ -114,7 +114,14 @@ class VLMEnsembleTextDataset(torch.utils.data.Dataset):
                     "attention_mask": datum_npz["attention_mask"],
                     "labels": datum_npz["labels"],
                     "token_type_ids": datum_npz["token_type_ids"]
-            }
+                }
+            elif "image_bound" in datum_npz:
+                datum_per_vlm[vlm_name] = {
+                    "input_ids": datum_npz["input_ids"],
+                    "attention_mask": datum_npz["attention_mask"],
+                    "labels": datum_npz["labels"],
+                    "image_bound": datum_npz["image_bound"]
+                }
             else:
                 datum_per_vlm[vlm_name] = {
                     "input_ids": datum_npz["input_ids"],
@@ -288,6 +295,8 @@ def tokenize_prompts_and_targets_using_vlm_ensemble(
                 print(tokenized_data.keys())
                 if "token_type_ids" in tokenized_data.keys():
                     data_kwargs["token_type_ids"] = tokenized_data["token_type_ids"][datum_idx].numpy()
+                if "image_bound" in tokenized_data.keys():
+                    data_kwargs["image_bound"] = tokenized_data["image_bound"][datum_idx].numpy()
                 np.savez(file=datum_file_path, **data_kwargs)
                 
     return tokenized_dir_path

@@ -146,7 +146,7 @@ class VLMEnsemble(lightning.LightningModule):
                     generation_kwargs=generation_kwargs,
                     precision=precision,
                     image_size=image_size
-                                )
+                )
             elif model_str.startswith("cogvlm2"):
                 from src.models.cogvlm2 import CogVLM2
                 vlm = CogVLM2(
@@ -154,7 +154,15 @@ class VLMEnsemble(lightning.LightningModule):
                     generation_kwargs=generation_kwargs,
                     precision=precision,
                     image_size=image_size
-                                )
+                )
+            elif model_str.startswith("MiniCPM"):
+                from src.models.minicpm import MiniCPMV26
+                vlm = MiniCPMV26(
+                    model_str=model_str,
+                    generation_kwargs=generation_kwargs,
+                    precision=precision,
+                    image_size=image_size
+                )
             else:
                 raise ValueError("Invalid model_str: {}".format(model_str))
 
@@ -269,6 +277,27 @@ class VLMEnsemble(lightning.LightningModule):
                         non_blocking=non_blocking,
                     ),
                     token_type_ids=text_data_by_model[model_name]["token_type_ids"].to(
+                        model_wrapper_device,
+                        non_blocking=non_blocking,
+                    ),
+                )
+            elif "MiniCPM" in model_name:
+                handles[model_name] = torch.jit.fork(
+                    model_wrapper.compute_loss,
+                    image=image.to(model_wrapper_device, non_blocking=non_blocking),
+                    input_ids=text_data_by_model[model_name]["input_ids"].to(
+                        model_wrapper_device,
+                        non_blocking=non_blocking,
+                    ),
+                    attention_mask=text_data_by_model[model_name]["attention_mask"].to(
+                        model_wrapper_device,
+                        non_blocking=non_blocking,
+                    ),
+                    labels=text_data_by_model[model_name]["labels"].to(
+                        model_wrapper_device,
+                        non_blocking=non_blocking,
+                    ),
+                    image_bound=text_data_by_model[model_name]["image_bound"].to(
                         model_wrapper_device,
                         non_blocking=non_blocking,
                     ),
