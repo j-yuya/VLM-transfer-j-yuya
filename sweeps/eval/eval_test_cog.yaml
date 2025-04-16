@@ -1,0 +1,53 @@
+program: evaluate_jailbreak_attacks_against_vlms.py
+project: universal-vlm-jailbreak-eval
+method: grid
+parameters:
+  data:
+    parameters:
+      batch_size:
+        values: [1]
+      dataset:
+        values: [
+          "advbench",
+          "rylan_anthropic_hhh",
+        ]
+      num_workers:
+        values: [ 2 ]
+      prefetch_factor:
+        values: [ 4 ]
+      split:
+        values: [ "eval" ]
+  lightning_kwargs:
+    parameters:
+      limit_eval_batches:
+        values: [1.0]
+      precision:
+        values: ["bf16-mixed"]
+      log_loss_every_n_steps:
+        values: [1]
+  model_to_eval:
+    values:
+      [
+      "{'cogvlm2-llama3-chat-19B'}",
+      "{'InternVL2-8B'}",
+      "{'MiniCPM-V-2_6'}",
+      "{'prism-reproduction-llava-v15+7b'}",
+      "{'prism-reproduction-llava-v15+13b'}",
+      ]
+  image_kwargs:
+    parameters:
+      image_size:
+        values:
+          - 448
+  n_generations:
+    values:
+      [100]
+  seed:
+    values:
+      [0]
+  wandb_attack_run_id:
+    values:
+      [
+        "j0sv9yky",
+        "qi03x4tg",
+      ]

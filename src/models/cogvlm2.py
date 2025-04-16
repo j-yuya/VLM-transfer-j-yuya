@@ -85,7 +85,7 @@ class CogVLM2(VisionLanguageModel, lightning.LightningModule):
         device = self.model.device
 
         # Verify input image shape
-        assert image.ndim == 3, f"Expected 4D image tensor, got {image.ndim}"
+        assert image.ndim == 3, f"Expected 3D image tensor, got {image.ndim}"
         #assert image.size(0) == 1, f"Expected a single image (B=1), got {image.size(0)}"
 
         # Repeat image for each batch sample and wrap in list for multimodal input
@@ -165,43 +165,16 @@ class CogVLM2(VisionLanguageModel, lightning.LightningModule):
             )
             trimmed_gen_ids = generated_ids[:, model_inputs['input_ids'].shape[1]:]
             response = self.tokenizer.decode(trimmed_gen_ids[0])
+            response = response.split("<|end_of_text|>")[0]
             model_generations.append(response)
         return model_generations
         
 
     def disable_model_gradients(self):
-        model = self.model  # model is an instance of CogVLMForCausalLM
-
-        model.requires_grad_(False)
-        model.eval()
-
-        # Freeze decoder (CogVLMModel)
-        if hasattr(model, "model"):
-            decoder = model.model
-            decoder.requires_grad_(False)
-            decoder.eval()
-
-            if hasattr(decoder, "embed_tokens"):
-                decoder.embed_tokens.requires_grad_(False)
-                decoder.embed_tokens.eval()
-
-            if hasattr(decoder, "layers"):
-                for layer in decoder.layers:
-                    layer.requires_grad_(False)
-                    layer.eval()
-
-            if hasattr(decoder, "norm"):
-                decoder.norm.requires_grad_(False)
-                decoder.norm.eval()
-
-            if hasattr(decoder, "vision"):
-                decoder.vision.requires_grad_(False)
-                decoder.vision.eval()
-
-        # Freeze final language modeling head
-        if hasattr(model, "lm_head"):
-            model.lm_head.requires_grad_(False)
-            model.lm_head.eval()
+        # Turn off gradients everywhere under self.model
+        self.model.requires_grad_(False)
+        # Switch everything to eval mode (no dropout etc.)
+        self.model.eval()
 
     def build_conversation_input_ids(
         self,

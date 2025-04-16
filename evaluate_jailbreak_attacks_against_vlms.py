@@ -30,6 +30,7 @@ import src.systems
 import src.utils
 
 
+
 def evaluate_vlm_adversarial_examples():
     run = wandb.init(
         project="universal-vlm-jailbreak-eval",
@@ -116,12 +117,7 @@ def evaluate_vlm_adversarial_examples():
 
     # We need to create a placeholder image to initialize the VLMEnsembleEvaluatingSystem.
     # This ensures that Lightning can recognize the parameter and place it on the appropriate device(s).
-    placeholder_adv_image = (
-        torchvision.transforms.v2.functional.pil_to_tensor(
-            Image.open(runs_jailbreak_dict_list[0]["file_path"], mode="r")
-        ).unsqueeze(0)
-        / 255.0
-    )
+    placeholder_adv_image = Image.open(runs_jailbreak_dict_list[0]["file_path"], mode="r")
 
     # https://lightning.ai/docs/pytorch/stable/common/precision_intermediate.html
     # "Tip: For faster initialization, you can create model parameters with the desired dtype directly on the device:"
@@ -159,12 +155,7 @@ def evaluate_vlm_adversarial_examples():
     for jailbreak_idx, run_jailbreak_dict in enumerate(runs_jailbreak_dict_list):
         # Read image from disk. This image data should match the uint8 images.
         # Shape: Batch-Channel-Height-Width
-        adv_image = (
-            torchvision.transforms.v2.functional.pil_to_tensor(
-                Image.open(run_jailbreak_dict["file_path"], mode="r")
-            ).unsqueeze(0)
-            / 255.0
-        )
+        adv_image = Image.open(run_jailbreak_dict["file_path"], mode="r")
 
         wandb_additional_data = {
             "eval_model_str": model_name_str,
@@ -175,6 +166,7 @@ def evaluate_vlm_adversarial_examples():
 
         # Bind data to the evaluation system for W&B logging on epoch end.
         vlm_ensemble_system.tensor_image.data = adv_image
+        vlm_ensemble_system.update_tensor_images(adv_image, wandb_config["image_kwargs"]["image_size"])
         vlm_ensemble_system.wandb_additional_data = wandb_additional_data
 
         # Compute the loss.
@@ -202,7 +194,7 @@ def evaluate_vlm_adversarial_examples():
             # TODO: Add a batch dimension.
             generation = vlm_ensemble_system.vlm_ensemble.vlms_dict[
                 model_name_str
-            ].generate(image=adv_image, prompts=[prompt])[0]
+            ].generate(image=src.utils.preprocess_model_image(model_name_str, adv_image, wandb_config["image_kwargs"]["image_size"]), prompts=[prompt])[0]
             generations_prompts_targets_evals_dict["generations"].extend([generation])
             generations_prompts_targets_evals_dict["prompts"].extend([prompt])
             generations_prompts_targets_evals_dict["targets"].extend([target])

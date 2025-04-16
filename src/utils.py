@@ -22,6 +22,9 @@ from src.models.ensemble import VLMEnsemble
 from src.image_handling import get_list_image
 from transformers import AutoProcessor
 from transformers.utils import TensorType
+from torchvision.transforms.functional import to_pil_image
+from typing import Optional
+from PIL.Image import Image as PILImage 
 
 def calc_rank():
     if not is_dist_avail_and_initialized():
@@ -486,10 +489,15 @@ def set_seed(seed=1):
     except ImportError:
         pass
 
-def cog_reverse_image(tensor: torch.Tensor) -> Image.Image:
+def cog_reverse_image(
+    tensor: torch.Tensor,
+    image_size: Optional[int] = None
+) -> Image.Image:
     """
     Reverses the normalization and tensor-to-PIL conversion
     for a 3xHxW image tensor. Assumes CogVLM-style normalization.
+    
+    Optionally resizes the image to (image_size, image_size).
     """
     # Mean and std from the original transform
     mean = [0.48145466, 0.4578275, 0.40821073]
@@ -498,7 +506,6 @@ def cog_reverse_image(tensor: torch.Tensor) -> Image.Image:
     # Inverse normalization
     inv_mean = [-m / s for m, s in zip(mean, std)]
     inv_std = [1 / s for s in std]
-
     inverse_normalize = transforms.Normalize(mean=inv_mean, std=inv_std)
 
     # Apply inverse normalization
@@ -507,4 +514,91 @@ def cog_reverse_image(tensor: torch.Tensor) -> Image.Image:
     # Clamp to valid range [0, 1]
     tensor = torch.clamp(tensor, 0.0, 1.0)
 
-    return tensor
+    # Convert back to a PIL image
+    from torchvision.transforms import ToPILImage
+    pil_image = ToPILImage()(tensor)
+
+    # Optionally resize to a square if image_size is provided
+    if image_size is not None:
+        pil_image = transforms.Resize(
+            (image_size, image_size),
+            interpolation=transforms.InterpolationMode.BICUBIC
+        )(pil_image)
+
+    return pil_image
+
+
+def preprocess_model_image(model_name: str, image: PILImage, image_size=None):
+    if "cog" in model_name:
+        width, height = image.size
+        max_dim = max(width, height)
+        pad_width = (max_dim - width) // 2
+        pad_height = (max_dim - height) // 2
+        image_size = 1344
+        
+        transform = transforms.Compose(
+            [
+                torchvision.transforms.v2.Pad(
+                    (pad_width, pad_height, pad_width, pad_height), fill=0
+                ),
+                transforms.Resize(
+                    (image_size, image_size), interpolation=transforms.InterpolationMode.BICUBIC
+                ),
+                transforms.ToTensor(),
+                transforms.Normalize((0.48145466, 0.4578275, 0.40821073), (0.26862954, 0.26130258, 0.27577711)),
+            ]
+        )
+        cog_image: torch.Tensor = transform(image)
+        return cog_image
+    elif "MiniCPM" in model_name:
+        width, height = image.size
+        max_dim = max(width, height)
+        pad_width = (max_dim - width) // 2
+        pad_height = (max_dim - height) // 2
+        
+        transform = transforms.Compose(
+            [
+                torchvision.transforms.v2.Pad(
+                    (pad_width, pad_height, pad_width, pad_height), fill=0
+                ),
+                transforms.Resize(
+                    (image_size, image_size), interpolation=transforms.InterpolationMode.BICUBIC
+                ),
+            ]
+        )
+        cpm_image: torch.Tensor = transform(image)
+
+        processor = AutoProcessor.from_pretrained("openbmb/MiniCPM-V-2_6", trust_remote_code=True)
+        do_pad = True
+        max_slice_nums = None
+        return_tensors = TensorType.PYTORCH
+        processed_image =processor.image_processor([[cpm_image]], do_pad=do_pad, max_slice_nums=max_slice_nums, return_tensors=return_tensors)
+        pixel_values = processed_image["pixel_values"][0][0]
+        return pixel_values
+    elif "Intern" in model_name:
+        width, height = image.size
+        max_dim = max(width, height)
+        pad_width = (max_dim - width) // 2
+        pad_height = (max_dim - height) // 2
+        transform_pil_image = torchvision.transforms.v2.Compose(
+            [
+                torchvision.transforms.v2.Pad(
+                    (pad_width, pad_height, pad_width, pad_height), fill=0
+                ),
+                torchvision.transforms.v2.Resize(
+                    (image_size, image_size)
+                ),
+            ]
+        )
+        intern_image = transform_pil_image(image)
+        intern_image = load_image_from_image(intern_image, image_size, (1,1), True).unsqueeze(0)
+        return intern_image
+
+    else:
+        other_image = (
+            torchvision.transforms.v2.functional.pil_to_tensor(
+                image
+            ).unsqueeze(0)
+            / 255.0
+        )
+        return other_image

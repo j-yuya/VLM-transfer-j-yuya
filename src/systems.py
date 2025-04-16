@@ -9,7 +9,7 @@ import wandb
 
 from src.models.ensemble import VLMEnsemble
 from src.models.evaluators import HarmBenchEvaluator, LlamaGuard2Evaluator
-from src.utils import create_initial_image, create_intern_image, reconstruct_to_original_size, create_cog_image, cog_reverse_image, create_minicpm_image, reconstruct_cpm_image
+from src.utils import create_initial_image, create_intern_image, reconstruct_to_original_size, create_cog_image, cog_reverse_image, create_minicpm_image, reconstruct_cpm_image, preprocess_model_image
 
 
 class AttackType(Enum):
@@ -223,9 +223,7 @@ class VLMEnsembleAttackingSystem(lightning.LightningModule):
                             # https://docs.wandb.ai/ref/python/data-types/image
                             # 0 removes the size-1 batch dimension.
                             # The transformation doesn't accept bfloat16.
-                            data_or_path=self.convert_tensor_to_pil_image(
-                                cog_reverse_image(log_image).to(torch.float32)
-                            ),
+                            data_or_path=cog_reverse_image(log_image, self.wandb_config["image_kwargs"]["image_size"])
                             # caption="Adversarial Image",
                         ),
                     },
@@ -270,7 +268,7 @@ class VLMEnsembleEvaluatingSystem(lightning.LightningModule):
     def __init__(
         self,
         wandb_config: Dict[str, Any],
-        tensor_image: Optional[torch.Tensor] = None,
+        tensor_image = None,
     ):
         super().__init__()
         self.wandb_config = wandb_config
@@ -279,16 +277,26 @@ class VLMEnsembleEvaluatingSystem(lightning.LightningModule):
             model_generation_kwargs=wandb_config["model_generation_kwargs"],
             image_size=wandb_config["image_kwargs"]["image_size"]
         )
-        self.tensor_image = torch.nn.Parameter(tensor_image, requires_grad=False)
+        #self.tensor_image = torch.nn.Parameter(tensor_image, requires_grad=False)
+        self.tensor_image = tensor_image
         self.wandb_additional_data = {}
+        self.model_strs = wandb_config["model_to_eval"]
+        self.tensor_images = {}
+        for model_str in self.model_strs:
+            self.tensor_images[model_str] = torch.nn.Parameter(preprocess_model_image(model_str, tensor_image, ), requires_grad=False)
+
+    def update_tensor_images(self, image, image_size=None):
+        for model_str in self.model_strs:
+            self.tensor_images[model_str] = preprocess_model_image(model_str, image, image_size)
+
 
     def test_step(self, batch: Dict[str, Dict[str, torch.Tensor]], batch_idx: int):
         if self.tensor_image is None:
             raise ValueError("Image must be provided!")
 
         # https://pytorch-lightning.readthedocs.io/en/latest/common/lightning_module.html#training_step
-        losses_per_model: Dict[str, torch.Tensor] = self.vlm_ensemble.compute_loss(
-            image=self.tensor_image,
+        losses_per_model: Dict[str, torch.Tensor] = self.vlm_ensemble.compute_loss_eval(
+            images=self.tensor_images,
             text_data_by_model=batch,
         )
 

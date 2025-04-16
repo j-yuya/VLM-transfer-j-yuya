@@ -330,6 +330,109 @@ class VLMEnsemble(lightning.LightningModule):
             torch.stack(list(losses_per_model.values()))
         )
         return losses_per_model
+    
+    def compute_loss_eval(
+        self,
+        images: List[torch.Tensor],
+        text_data_by_model: Dict[str, Dict[str, torch.Tensor]],
+        non_blocking: bool = False,
+    ) -> Dict[str, torch.Tensor]:
+        # Always calculate loss per model and use for updating the adversarial example.
+        losses_per_model: Dict[str, torch.Tensor] = {}
+        handles = {}
+
+        # TODO: How to check whether or not this is blocking?
+        # Ran experiments to confirm.
+        for model_idx, (model_name, model_wrapper) in enumerate(self.vlms_dict.items()):
+            model_wrapper_device = model_wrapper.device
+
+            if "cog" in model_name:
+                handles[model_name] = torch.jit.fork(
+                    model_wrapper.compute_loss,
+                    image=images[model_name].to(model_wrapper_device, non_blocking=non_blocking),
+                    input_ids=text_data_by_model[model_name]["input_ids"].to(
+                        model_wrapper_device,
+                        non_blocking=non_blocking,
+                    ),
+                    attention_mask=text_data_by_model[model_name]["attention_mask"].to(
+                        model_wrapper_device,
+                        non_blocking=non_blocking,
+                    ),
+                    labels=text_data_by_model[model_name]["labels"].to(
+                        model_wrapper_device,
+                        non_blocking=non_blocking,
+                    ),
+                    token_type_ids=text_data_by_model[model_name]["token_type_ids"].to(
+                        model_wrapper_device,
+                        non_blocking=non_blocking,
+                    ),
+                )
+            elif "MiniCPM" in model_name:
+                handles[model_name] = torch.jit.fork(
+                    model_wrapper.compute_loss,
+                    image=images[model_name].to(model_wrapper_device, non_blocking=non_blocking),
+                    input_ids=text_data_by_model[model_name]["input_ids"].to(
+                        model_wrapper_device,
+                        non_blocking=non_blocking,
+                    ),
+                    attention_mask=text_data_by_model[model_name]["attention_mask"].to(
+                        model_wrapper_device,
+                        non_blocking=non_blocking,
+                    ),
+                    labels=text_data_by_model[model_name]["labels"].to(
+                        model_wrapper_device,
+                        non_blocking=non_blocking,
+                    ),
+                    image_bound=text_data_by_model[model_name]["image_bound"].to(
+                        model_wrapper_device,
+                        non_blocking=non_blocking,
+                    ),
+                )
+            elif "Intern" in model_name:
+                handles[model_name] = torch.jit.fork(
+                    model_wrapper.compute_loss,
+                    image=images[model_name].to(model_wrapper_device, non_blocking=non_blocking),
+                    input_ids=text_data_by_model[model_name]["input_ids"].to(
+                        model_wrapper_device,
+                        non_blocking=non_blocking,
+                    ),
+                    attention_mask=text_data_by_model[model_name]["attention_mask"].to(
+                        model_wrapper_device,
+                        non_blocking=non_blocking,
+                    ),
+                    labels=text_data_by_model[model_name]["labels"].to(
+                        model_wrapper_device,
+                        non_blocking=non_blocking,
+                    ),
+                )
+            else:
+                handles[model_name] = torch.jit.fork(
+                    model_wrapper.compute_loss,
+                    image=images[model_name].to(model_wrapper_device, non_blocking=non_blocking),
+                    input_ids=text_data_by_model[model_name]["input_ids"].to(
+                        model_wrapper_device,
+                        non_blocking=non_blocking,
+                    ),
+                    attention_mask=text_data_by_model[model_name]["attention_mask"].to(
+                        model_wrapper_device,
+                        non_blocking=non_blocking,
+                    ),
+                    labels=text_data_by_model[model_name]["labels"].to(
+                        model_wrapper_device,
+                        non_blocking=non_blocking,
+                    ),
+                )
+
+        # # Collect results from all models
+        for model_name, handle in handles.items():
+            loss = torch.jit.wait(handle)
+            losses_per_model[model_name] = loss.to(self.device, non_blocking=True)
+
+        # Calculate average loss
+        losses_per_model["avg"] = torch.mean(
+            torch.stack(list(losses_per_model.values()))
+        )
+        return losses_per_model
 
     def disable_vlm_gradients(self):
         # set all models' requires_grad to False
