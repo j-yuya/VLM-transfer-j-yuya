@@ -151,6 +151,15 @@ def create_minicpm_image(image_kwargs: Dict[str, Any], seed: int = 0) -> torch.T
     elif image_kwargs["image_initialization"] == "random":
         image_size = image_kwargs["image_size"]
         image: torch.Tensor = torch.rand((3, image_size, image_size))
+        from torchvision.transforms import ToPILImage
+        image = ToPILImage()(image)
+        processor = AutoProcessor.from_pretrained("openbmb/MiniCPM-V-2_6", trust_remote_code=True)
+        do_pad = True
+        max_slice_nums = None
+        return_tensors = TensorType.PYTORCH
+        processed_image =processor.image_processor([[image]], do_pad=do_pad, max_slice_nums=max_slice_nums, return_tensors=return_tensors)
+        pixel_values = processed_image["pixel_values"][0][0]
+        tgt_sizes = processed_image["tgt_sizes"][0][0]
     elif image_kwargs["image_initialization"] == "trina":
         image_path = f"images/trina/{str(seed).zfill(3)}.jpg"
         pil_image = Image.open(image_path, mode="r")
@@ -168,7 +177,6 @@ def create_minicpm_image(image_kwargs: Dict[str, Any], seed: int = 0) -> torch.T
                 transforms.Resize(
                     (image_size, image_size), interpolation=transforms.InterpolationMode.BICUBIC
                 ),
-                transforms.ToTensor(),
             ]
         )
         image: torch.Tensor = transform(pil_image)
@@ -194,57 +202,84 @@ from typing import Tuple
 def reconstruct_cpm_image(
     patch_tensor: torch.Tensor,
     tgt_size: torch.Tensor,  # [H_patches, W_patches]
-    patch_size: int = 14,
-    mean: Tuple[float, float, float] = (0.5, 0.5, 0.5),
-    std: Tuple[float, float, float] = (0.5, 0.5, 0.5),
 ) -> torch.Tensor:
     """
     Reconstructs image from [3, patch_size, N_patches] using F.fold.
     """
-    C, P, total_columns = patch_tensor.shape
-    assert P == patch_size, f"Expected patch size {patch_size}, got {P}"
+    print("IMAGER")
+    
+    mean = torch.tensor([0.5, 0.5, 0.5], device=patch_tensor.device, dtype=torch.float32)
+    std = torch.tensor([0.5, 0.5, 0.5], device=patch_tensor.device, dtype=torch.float32)
 
-    # Inferred patch count
-    N = total_columns // patch_size
-    H_patches, W_patches = tgt_size.tolist()
-    assert H_patches * W_patches == N, f"Patch count mismatch: {H_patches}x{W_patches} != {N}"
+    img = inverse_reshape_and_unnormalize(patch_tensor, tgt_size, mean, std)
+    # print(patch_tensor.shape)
+    # print(patch_tensor)
+    # print(tgt_size.shape)
+    # print(tgt_size)
+    # print(mean)
+    # print(std)
+    # print(mean.shape)
+    # print(std.shape)
+    # print((std[:, None, None] + mean[:, None, None]).shape)
+    # print(img.shape)  # ✅ [3, 448, 448]
 
-    print(f">> patch_tensor.shape: {patch_tensor.shape}")
-    print(f">> Inferred patch count: {N}")
-    print(f">> Target patches: {H_patches}x{W_patches} = {H_patches * W_patches}")
-    print(f">> Output image size: {H_patches * patch_size} x {W_patches * patch_size}")
-
-    # Reverse reshape_by_patch
-    patches = patch_tensor.view(C, patch_size, patch_size, N).permute(0, 3, 1, 2)  # [C, N, P, P]
-    patches = patches.reshape(1, C * patch_size * patch_size, N)  # [1, C*P*P, N]
-
-    # Reconstruct image
-    output_h = H_patches * patch_size
-    output_w = W_patches * patch_size
-    reconstructed = F.fold(
-        patches,
-        output_size=(output_h, output_w),
-        kernel_size=patch_size,
-        stride=patch_size
-    )[0]  # remove batch dim → [C, H, W]
-
-    # Unnormalize
-    mean_tensor = torch.tensor(mean, device=reconstructed.device).view(-1, 1, 1)
-    std_tensor = torch.tensor(std, device=reconstructed.device).view(-1, 1, 1)
-    reconstructed = reconstructed * std_tensor + mean_tensor
-
-    return reconstructed.clamp(0, 1)
-    IMAGENET_MEAN = (0.485, 0.456, 0.406)
-    IMAGENET_STD = (0.229, 0.224, 0.225)
-    transform = T.Compose([
-        T.Lambda(lambda img: img.convert('RGB') if img.mode != 'RGB' else img),
-        T.Resize((input_size, input_size), interpolation=InterpolationMode.BICUBIC),
-        T.ToTensor(),
-        T.Normalize(mean=IMAGENET_MEAN, std=IMAGENET_STD)
-    ])
-    return transform
+    return img
 
 
+def inverse_reshape_and_unnormalize(
+    patch_tensor: torch.Tensor,
+    tgt_size: torch.Tensor,  # e.g. [32,32]
+    mean: torch.Tensor = None,
+    std: torch.Tensor  = None,
+    patch_size: int    = 14,
+):
+    """
+    Invert the custom reshape_by_patch(...) that ends up with shape [3,14,14*1024].
+    That function does an extra permute(0,1,3,2), so we must 'un-permute'.
+    """
+
+    # Convert tgt_size => list
+    if isinstance(tgt_size, torch.Tensor):
+        tgt_size = tgt_size.tolist()
+    h_patches, w_patches = tgt_size  # [32,32]
+    num_patches = h_patches * w_patches  # 1024
+
+    # Step A: The final shape from preprocess is [3,14, 14*1024] => [3,14,14336].
+    # We must first "unflatten" it to [3,14,1024,14].
+    x = patch_tensor.reshape(3, patch_size, num_patches, patch_size)
+    # => [3,14,1024,14]
+
+    # Step B: Undo the permute(0,1,3,2). 
+    # Swapping dims 2 and 3 is its own inverse, so we do the same permute again:
+    x = x.permute(0, 1, 3, 2)  # => [3,14,14,1024]
+
+    # Step C: Flatten to [3*14*14, 1024] => [588, 1024]
+    x = x.reshape(3 * patch_size * patch_size, num_patches)
+
+    # Step D: Insert a batch dim => [1,588,1024]
+    x = x.unsqueeze(0)
+
+    # Step E: fold => [1,3,448,448]
+    H = patch_size * h_patches  # => 448
+    W = patch_size * w_patches  # => 448
+    x = F.fold(
+        x,
+        output_size=(H, W),
+        kernel_size=(patch_size, patch_size),
+        stride=(patch_size, patch_size),
+    )
+    # => [1,3,448,448]
+
+    # Step F: Remove batch => [3,448,448]
+    x = x.squeeze(0)
+
+    # Step G: Unnormalize if requested
+    if mean is not None and std is not None:
+        mean = mean.to(device=x.device, dtype=x.dtype)[:, None, None]
+        std  =  std.to(device=x.device, dtype=x.dtype)[:, None, None]
+        x = x * std + mean
+
+    return x.clamp(0, 1)
 def dynamic_preprocess(image, patch_grid=(1, 1), image_size=448, use_thumbnail=False):
     num_patches_x, num_patches_y = patch_grid
     target_width = image_size * num_patches_x

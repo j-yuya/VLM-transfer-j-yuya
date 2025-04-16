@@ -11,4 +11,4 @@
 #SBATCH --gres=gpu:1
 
 
-wandb agent julian-yuya-caspary-university-of-mannheim/universal-vlm-jailbreak/acsmgg0k
+wandb agent julian-yuya-caspary-university-of-mannheim/universal-vlm-jailbreak/43nadw4a

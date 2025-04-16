@@ -195,7 +195,7 @@ class MiniCPMV26(VisionLanguageModel, lightning.LightningModule):
             image = image.squeeze(0)
         assert image.ndim == 3, f"Expected (3, H, W), got {image.shape}"
         model_generations = []
-
+        placeholder_image = Image.new("RGB", (self.image_size, self.image_size), color=(0, 0, 0))
         if self.model.processor is None:
             self.model.processor = AutoProcessor.from_pretrained(self.model.config._name_or_path, trust_remote_code=True)
         processor = self.model.processor
@@ -221,23 +221,16 @@ class MiniCPMV26(VisionLanguageModel, lightning.LightningModule):
                 for msgs in msgs_list
             ]
             # Same image for each input
-            images = [[image]]
+            
 
             # image_data = {"pixel_values":[[image]], "image_sizes": [[self.image_sizes]], "tgt_sizes": [[self.tgt_sizes]]}
             # inputs = processor._convert_images_texts_to_inputs(image_data, prompts_str, max_slice_nums=max_slice_nums, use_image_id=use_image_id, max_length=max_inp_length)
-            inputs = processor(prompts_str, images, max_slice_nums=max_slice_nums, use_image_id=use_image_id, max_length=max_inp_length)
-            print("GEN")
-            print(inputs["input_ids"].shape)
-            print(inputs["attention_mask"].shape)
-            print(inputs["image_bound"])
-            print(len(inputs["pixel_values"]))
-            print(inputs["pixel_values"][0][0].shape)
-            print(inputs["tgt_sizes"])
-            print(inputs["image_sizes"])
+            inputs = processor(prompts_str, [[placeholder_image]], max_slice_nums=max_slice_nums, use_image_id=use_image_id, max_length=max_inp_length)
+
+            inputs["pixel_values"] = [[image]]
             # import pdb
             # pdb.set_trace()
             inputs.pop("image_sizes")
-            print("original mean/std:", inputs["pixel_values"][0][0].mean().item(), inputs["pixel_values"][0][0].std().item())
 
             inputs.to(self.model.device)
             res = self.model.generate(
