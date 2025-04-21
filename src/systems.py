@@ -282,8 +282,9 @@ class VLMEnsembleEvaluatingSystem(lightning.LightningModule):
         self.wandb_additional_data = {}
         self.model_strs = wandb_config["model_to_eval"]
         self.tensor_images = {}
+        print(tensor_image)
         for model_str in self.model_strs:
-            self.tensor_images[model_str] = torch.nn.Parameter(preprocess_model_image(model_str, tensor_image, ), requires_grad=False)
+            self.tensor_images[model_str] = torch.nn.Parameter(preprocess_model_image(model_str, tensor_image, self.wandb_config["image_kwargs"]["image_size"]), requires_grad=False)
 
     def update_tensor_images(self, image, image_size=None):
         for model_str in self.model_strs:
