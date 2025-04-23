@@ -96,6 +96,28 @@ def create_intern_image(image_kwargs: Dict[str, Any], seed: int = 0) -> torch.Te
         print(image.shape)
         assert len(image.shape) == 5
         return image
+    elif image_kwargs["image_initialization"] == "random":
+        image_size = image_kwargs["image_size"]
+        image: torch.Tensor = torch.rand((1, 3, image_size, image_size))
+        width, height = pil_image.size
+        max_dim = max(width, height)
+        pad_width = (max_dim - width) // 2
+        pad_height = (max_dim - height) // 2
+        transform_pil_image = torchvision.transforms.v2.Compose(
+            [
+                torchvision.transforms.v2.Pad(
+                    (pad_width, pad_height, pad_width, pad_height), fill=0
+                ),
+                torchvision.transforms.v2.Resize(
+                    (image_kwargs["image_size"], image_kwargs["image_size"])
+                ),
+            ]
+        )
+        image = transform_pil_image(pil_image)
+        image = load_image_from_image(image, image_kwargs["image_size"], (1,1), True).unsqueeze(0)
+        print(image.shape)
+        assert len(image.shape) == 5
+        return image
     
 def create_cog_image(image_kwargs: Dict[str, Any], seed: int = 0) -> torch.Tensor:
     if image_kwargs["image_initialization"] == "NIPS17":
