@@ -98,22 +98,9 @@ def create_intern_image(image_kwargs: Dict[str, Any], seed: int = 0) -> torch.Te
         return image
     elif image_kwargs["image_initialization"] == "random":
         image_size = image_kwargs["image_size"]
-        image: torch.Tensor = torch.rand((1, 3, image_size, image_size))
-        width, height = pil_image.size
-        max_dim = max(width, height)
-        pad_width = (max_dim - width) // 2
-        pad_height = (max_dim - height) // 2
-        transform_pil_image = torchvision.transforms.v2.Compose(
-            [
-                torchvision.transforms.v2.Pad(
-                    (pad_width, pad_height, pad_width, pad_height), fill=0
-                ),
-                torchvision.transforms.v2.Resize(
-                    (image_kwargs["image_size"], image_kwargs["image_size"])
-                ),
-            ]
-        )
-        image = transform_pil_image(pil_image)
+        image: torch.Tensor = torch.rand((3, image_size, image_size))
+        from torchvision.transforms import ToPILImage
+        image = ToPILImage()(image)
         image = load_image_from_image(image, image_kwargs["image_size"], (1,1), True).unsqueeze(0)
         print(image.shape)
         assert len(image.shape) == 5
@@ -132,6 +119,7 @@ def create_cog_image(image_kwargs: Dict[str, Any], seed: int = 0) -> torch.Tenso
     elif image_kwargs["image_initialization"] == "random":
         image_size = 1344
         image: torch.Tensor = torch.rand((3, image_size, image_size))
+        #TODO: Att normalization of the random image!
     elif image_kwargs["image_initialization"] == "trina":
         image_path = f"images/trina/{str(seed).zfill(3)}.jpg"
         pil_image = Image.open(image_path, mode="r")
