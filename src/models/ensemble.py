@@ -27,6 +27,7 @@ class VLMEnsemble(lightning.LightningModule):
         self,
         model_strs: List[str],
         model_generation_kwargs: Dict[str, Dict[str, Any]],
+        regularization_args,
         precision: str = "bf16-mixed",
         image_size: int = 448,
     ):
@@ -144,6 +145,7 @@ class VLMEnsemble(lightning.LightningModule):
                 vlm = InternVL2(
                     model_str=model_str,
                     generation_kwargs=generation_kwargs,
+                    regularization_args=regularization_args,
                     precision=precision,
                     image_size=image_size
                 )

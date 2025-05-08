@@ -26,9 +26,12 @@ class VLMEnsembleAttackingSystem(lightning.LightningModule):
         super().__init__()
         tgt_sizes = None
         self.wandb_config = wandb_config
+        if wandb_config["regularization_kwargs"]:
+            self.use_steering_reg = wandb_config["regularization_kwargs"]["use_steering_reg"]
         self.vlm_ensemble = VLMEnsemble(
             model_strs=wandb_config["models_to_attack"],
             model_generation_kwargs=wandb_config["model_generation_kwargs"],
+            regularization_args=wandb_config["regularization_kwargs"],
             precision=wandb_config["lightning_kwargs"]["precision"],
             image_size=wandb_config["image_kwargs"]["image_size"]
         )
@@ -166,13 +169,28 @@ class VLMEnsembleAttackingSystem(lightning.LightningModule):
             text_data_by_model=batch,
         )
         for loss_str, loss_val in losses_per_model.items():
-            self.log(
-                f"loss/{loss_str}",
-                loss_val.detach().item(),
-                on_step=True,
-                on_epoch=False,
-                sync_dist=True,
-            )
+            if self.use_steering_reg:
+                if loss_str=="InternVL2-8B":
+                    intern_model = self.vlm_ensemble.vlms_dict[loss_str]
+                    proj = torch.einsum("bd,d->b", intern_model._hidden, intern_model.r)
+                    reg_loss = (proj ** 2).mean()
+                    total_loss = (1 - intern_model.beta) * loss_val + intern_model.beta * reg_loss
+                    losses_per_model[loss_str] = total_loss
+                self.log(
+                    f"loss/{loss_str}",
+                    loss_val.detach().item(),
+                    on_step=True,
+                    on_epoch=False,
+                    sync_dist=True,
+                )
+            else:
+                self.log(
+                    f"loss/{loss_str}",
+                    loss_val.detach().item(),
+                    on_step=True,
+                    on_epoch=False,
+                    sync_dist=True,
+                )
 
         self.log(
             "optimizer_step_counter",
@@ -275,6 +293,7 @@ class VLMEnsembleEvaluatingSystem(lightning.LightningModule):
         self.vlm_ensemble = VLMEnsemble(
             model_strs=wandb_config["model_to_eval"],
             model_generation_kwargs=wandb_config["model_generation_kwargs"],
+            regularization_args=None,
             image_size=wandb_config["image_kwargs"]["image_size"]
         )
         #self.tensor_image = torch.nn.Parameter(tensor_image, requires_grad=False)

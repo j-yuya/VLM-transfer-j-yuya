@@ -119,6 +119,12 @@ def create_cog_image(image_kwargs: Dict[str, Any], seed: int = 0) -> torch.Tenso
     elif image_kwargs["image_initialization"] == "random":
         image_size = 1344
         image: torch.Tensor = torch.rand((3, image_size, image_size))
+        transform = transforms.Compose(
+            [
+                transforms.Normalize((0.48145466, 0.4578275, 0.40821073), (0.26862954, 0.26130258, 0.27577711)),
+            ]
+        )
+        image: torch.Tensor = transform(image)
         #TODO: Att normalization of the random image!
     elif image_kwargs["image_initialization"] == "trina":
         image_path = f"images/trina/{str(seed).zfill(3)}.jpg"

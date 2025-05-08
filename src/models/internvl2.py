@@ -70,6 +70,7 @@ class InternVL2(VisionLanguageModel, lightning.LightningModule):
         #TODO: More Param Variants
         model_str: str = "InternVL2-8B",
         generation_kwargs: Mapping[str, Any] | None = None,
+        regularization_args=None,
         precision: str = "bf16-mixed",
         image_size: int = 448,
     ):
@@ -118,6 +119,13 @@ class InternVL2(VisionLanguageModel, lightning.LightningModule):
             use_flash_attn=True,
             trust_remote_code=True).eval().cuda()
         
+        if regularization_args and regularization_args["use_steering_reg"]:
+            self.layer_idx=regularization_args["layer_idx"]
+            self.pos_idx=regularization_args["pos_idx"]
+            self._capture_hidden()
+            r = torch.load(regularization_args["direction_path"])  
+            self.r = (r / r.norm()).to(dtype=torch.bfloat16, device=self.model.device)
+            self.beta = regularization_args["beta"]
         #self.already_logged_new_mask: bool = False  # For print debugigng
         #self.already_logged_text: bool = False  # For print debugigng
 
@@ -134,20 +142,23 @@ class InternVL2(VisionLanguageModel, lightning.LightningModule):
         labels: torch.Tensor,
     ) -> torch.Tensor:
         device = self.model.device
+        batch_size = input_ids.size(0)
         # Since we only get a single image, we need to repeat it for the batch size.
         assert image.ndim == 5, f"Expected 4 dims, got {image.ndim}"
         # assert that we only have one image here
         assert (
             image.size(0) == 1
         ), f"Expected only 1 image that we repeat, got {image.size(0)}"
-        image = image.repeat(1, 1, 1, 1, 1)
-        image_flags = torch.tensor([1] * image.shape[1], dtype=torch.long)
+        image = image.repeat(batch_size, 1, 1, 1, 1)
+        image_seq_len = image.shape[1]  # T
+        image_flags = torch.tensor([1] * image_seq_len, dtype=torch.long, device=device)
+        image_flags = image_flags.unsqueeze(0).repeat(batch_size, 1)
         
-        print(image.squeeze(0).shape)
-        print(attention_mask.shape)
-        print(input_ids.shape)
-        print(attention_mask.shape)
-        print(image_flags.shape)
+        torch.set_printoptions(threshold=float('inf'))
+        # print(image.squeeze(0).shape)
+        print(str(input_ids))
+        print(str(attention_mask))
+        print(str(image_flags))
 
 
         outputs = self.model(
@@ -157,7 +168,8 @@ class InternVL2(VisionLanguageModel, lightning.LightningModule):
             image_flags = image_flags.to(device=device),
             labels=labels.to(device=device),
         )
-        
+        print("LOSS")
+        print(outputs.loss.item())
         return outputs.loss
 
     def convert_prompts_and_maybe_targets_to_input_ids_and_attention_mask(
@@ -319,6 +331,27 @@ class InternVL2(VisionLanguageModel, lightning.LightningModule):
         if hasattr(self.model, "mlp1"):
             self.model.mlp1.requires_grad_(False)
             self.model.mlp1.eval()
+
+    def _capture_hidden(self):
+        # 1) clear any previous hook (e.g., when re-initialising the trainer)
+        if getattr(self, "_iris_hook", None) is not None:
+            self._iris_hook.remove()
+            self._iris_hook = None
+
+        self._hidden = None              # will hold the captured activation
+
+        def hook(_module, _input, output):
+            # output shape is (batch, seq_len, hidden)
+            hidden = output[0]
+
+            self._hidden = hidden[:, self.pos_idx, :]
+
+        # 2) pick the decoder block in InternVL:
+        #    self.model.language_model.model.layers is a ModuleList
+        layer = self.model.language_model.model.layers[self.layer_idx]
+
+        # 3) attach the hook and keep a reference so we can remove it later
+        self._iris_hook = layer.register_forward_hook(hook)
 
 def only_assistant_response(starting_text: str, response: str) -> str:
     assert starting_text in response, f"Expected {starting_text} to be in {response}"

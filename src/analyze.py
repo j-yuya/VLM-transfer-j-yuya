@@ -137,8 +137,17 @@ def download_wandb_project_runs_configs_by_run_ids(
             wandb_username = api.viewer.username
 
         run_results_list = []
+        print(run_ids)
         for run_id in tqdm(run_ids):
-            run = api.run(f"{wandb_username}/{wandb_project_path}/{run_id}")
+            try:
+                run = api.run(f"{wandb_username}/{wandb_project_path}/{run_id}")
+            except wandb.errors.CommError as e:
+                print(f"Skipping run {run_id}: {e}")
+                continue
+            except Exception as e:
+                print(f"Unexpected error for run {run_id}: {e}")
+                continue
+            
             # .summary contains the output keys/values for metrics like accuracy.
             #  We call ._json_dict to omit large files
             summary = run.summary._json_dict
