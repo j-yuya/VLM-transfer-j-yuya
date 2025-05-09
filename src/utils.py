@@ -93,7 +93,6 @@ def create_intern_image(image_kwargs: Dict[str, Any], seed: int = 0) -> torch.Te
         )
         image = transform_pil_image(pil_image)
         image = load_image_from_image(image, image_kwargs["image_size"], (1,1), True).unsqueeze(0)
-        print(image.shape)
         assert len(image.shape) == 5
         return image
     elif image_kwargs["image_initialization"] == "random":

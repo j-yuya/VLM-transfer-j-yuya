@@ -25,6 +25,7 @@ class MiniCPMV26(VisionLanguageModel, lightning.LightningModule):
         #TODO: More Param Variants
         model_str: str = "MiniCPM-V-2_6",
         generation_kwargs: Mapping[str, Any] | None = None,
+        regularization_args=None,
         precision: str = "bf16-mixed",
         image_size: int = 448,
     ):
@@ -68,7 +69,16 @@ class MiniCPMV26(VisionLanguageModel, lightning.LightningModule):
         
         self.tgt_sizes=None
         self.image_sizes=None
-        
+        self.use_steering_reg = False
+        if regularization_args and regularization_args["use_steering_reg"]:
+            self.use_steering_reg = True
+            self.layer_idx=regularization_args["layer_idx"]
+            self.pos_idx=regularization_args["pos_idx"]
+            self._capture_hidden()
+            r = torch.load(regularization_args["direction_path"])  
+            self.r = (r / r.norm()).to(dtype=torch.bfloat16, device=self.model.device)
+            self.beta = regularization_args["beta"]
+
         #self.already_logged_new_mask: bool = False  # For print debugigng
         #self.already_logged_text: bool = False  # For print debugigng
 
@@ -107,8 +117,7 @@ class MiniCPMV26(VisionLanguageModel, lightning.LightningModule):
         # If you only have a single image and want to replicate it for each item in the batch:
         images = [[image] for _ in range(B)]
         tgt_sizes = [self.tgt_sizes.unsqueeze(0) for _ in range(B)]
-        print(images)
-        print(tgt_sizes)
+
         #print(scaled_image)
         #repeat(B, 1, 1, 1)  # [B, C, H, W]
 
@@ -116,6 +125,11 @@ class MiniCPMV26(VisionLanguageModel, lightning.LightningModule):
         # image_inputs = preprocess_for_attack([[image]])
         # images, image_sizes, tgt_sizes = image_inputs["pixel_values"], image_inputs["image_sizes"], image_inputs["tgt_sizes"]
 
+        torch.set_printoptions(threshold=10000)
+        print("seq_len in compute_loss :", input_ids[0].numel())
+        print(f"First input_ids: {input_ids[0]}")
+        print(f"First attention_mask: {attention_mask[0]}")
+        print(f"First labels: {labels[0]}")
 
         inputs = MiniCPMVBatchFeature(data={
             "input_ids": input_ids,
@@ -134,9 +148,11 @@ class MiniCPMV26(VisionLanguageModel, lightning.LightningModule):
         inputs["position_ids"] = position_ids
         outputs = self.model(
             data=inputs.to(device),
-            labels=labels.to(device)
+            labels=labels.to(device),
+            output_hidden_states=self.use_steering_reg,
         )
-        return outputs.loss if hasattr(outputs, "loss") else outputs[0]
+        return outputs.loss
+    #.loss if hasattr(outputs, "loss") else outputs[0]
 
 
     def convert_prompts_and_maybe_targets_to_input_ids_and_attention_mask(
@@ -172,13 +188,16 @@ class MiniCPMV26(VisionLanguageModel, lightning.LightningModule):
             torch.set_printoptions(threshold=10000)
             # first_text = prompt_texts[0]
             # print(f"First text: {first_text}")
+
+            print(f"First prmpt: {prompts[0]}")
+            print(f"First target: {targets[0]}")
             print(f"First input_ids: {input_by_model['input_ids'][0]}")
             print(f"First attention_mask: {input_by_model['attention_mask'][0]}")
             print(f"First labels: {results['labels'][0]}")
-            if len(input_by_model['input_ids']) > 1:
-                print(f"Second input ids: {input_by_model['input_ids'][1]}")
-                print(f"Second attention_mask: {input_by_model['attention_mask'][1]}")
-                print(f"Second labels: {results['labels'][1]}")
+            # if len(input_by_model['input_ids']) > 1:
+            #     print(f"Second input ids: {input_by_model['input_ids'][1]}")
+            #     print(f"Second attention_mask: {input_by_model['attention_mask'][1]}")
+            #     print(f"Second labels: {results['labels'][1]}")
             # non_minus_100 = [r for r in results["labels"][0] if r != IGNORE_INDEX]
             # non_minus_100_text = self.tokenizer.decode(non_minus_100)
             # print(f"Example text that we calculate loss on: {non_minus_100_text}")
@@ -191,6 +210,7 @@ class MiniCPMV26(VisionLanguageModel, lightning.LightningModule):
     @torch.inference_mode()
     def generate(self, image: torch.Tensor, prompts: List[str]) -> List[str]:
         # We should only have a single image.
+        self.remove_hidden_hooks()
         if image.ndim == 4:
             image = image.squeeze(0)
         assert image.ndim == 3, f"Expected (3, H, W), got {image.shape}"
@@ -337,38 +357,103 @@ class MiniCPMV26(VisionLanguageModel, lightning.LightningModule):
         )
 
         return inputs
+    
+    def _capture_hidden(
+        self,
+        layer_idx: int | None = None,      # None ➜ all layers (default)
+        track_grad: bool = True,
+    ):
+        """
+        Capture hidden state(s) at token position `self.pos_idx`.
 
+        layer_idx :
+            • int   – capture only that decoder block  
+            • None  – capture every block (old behaviour)
+
+        Results are stored in:
+            • self._hidden           (tensor)          if single layer
+            • self._hidden_layers    (list[tensor])    if all layers
+        """
+        # 1. clear any hooks from a previous call
+        self.remove_hidden_hooks()
+
+        # 2. prepare storage
+        if layer_idx is None:
+            self._hidden_layers: list[torch.Tensor] = []
+        else:
+            self._hidden = None
+
+        # 3. helper that builds a hook
+        def make_hook(idx):
+            def hook(_mod, _inp, out):
+                hidden = out[0] if isinstance(out, (tuple, list)) else out
+                vec = hidden[:, self.pos_idx, :]
+                if not track_grad:
+                    vec = vec.detach()
+
+                if layer_idx is None:           # collecting many
+                    self._hidden_layers.append(vec)
+                elif idx == layer_idx:          # collecting one
+                    self._hidden = vec
+            return hook
+
+        # 4. attach hooks
+        self._iris_handles: list = []
+        layers = self.model.llm.model.layers      # Mini-CPM path
+        if layer_idx is None:
+            for i, blk in enumerate(layers):
+                h = blk.register_forward_hook(make_hook(i))
+                self._iris_handles.append(h)
+        else:
+            blk = layers[layer_idx]
+            h = blk.register_forward_hook(make_hook(layer_idx))
+            self._iris_handles.append(h)
+    
+    def remove_hidden_hooks(self):
+        for h in getattr(self, "_iris_handles", []):
+            h.remove()
+        self._iris_handles = []
+        self._hidden = None
+        self._hidden_layers = []
 
 IGNORE_INDEX = -100  # standard for ignoring in loss
 
-def make_labels(
-    input_ids: torch.Tensor,
-    pad_token_id: int,
-    targets: list[str],
-    tokenizer
-):
-    labels = input_ids.clone()
-    labels[:] = IGNORE_INDEX  # ignore everything by default
+def make_labels(input_ids: torch.Tensor,
+                pad_token_id: int,
+                targets: list[str],
+                tokenizer,
+                ):
+    """
+    Put the gold tokens of `targets[i]` at the right place in the label
+    tensor and leave everything else at IGNORE_INDEX.
+    """
+    labels = torch.full_like(input_ids, IGNORE_INDEX)
+
+    # reusable encodings
+    prefix_ids  = tokenizer("<|im_start|>assistant\n",
+                            add_special_tokens=False).input_ids
+    suffix_ids  = tokenizer("<|im_end|>",
+                            add_special_tokens=False).input_ids
 
     for i, target in enumerate(targets):
-        # Build assistant message as it was included in the template
-        assistant_prefix = "<|im_start|>assistant\n"
-        assistant_suffix = "<|im_end|>"
+        target_ids = tokenizer(target, add_special_tokens=False).input_ids
+        combo      = prefix_ids + target_ids + suffix_ids
 
-        full_target_text = assistant_prefix + target + assistant_suffix
-        full_target_ids = tokenizer(full_target_text, add_special_tokens=False).input_ids
+        seq = input_ids[i].tolist()
 
-        # Search for this sequence in the input_ids
-        sequence = input_ids[i].tolist()
-
-        for start_idx in range(len(sequence) - len(full_target_ids) + 1):
-            if sequence[start_idx:start_idx + len(full_target_ids)] == full_target_ids:
-                labels[i, start_idx:start_idx + len(full_target_ids)] = input_ids[i, start_idx:start_idx + len(full_target_ids)]
+        # find the whole assistant chunk
+        for start in range(len(seq) - len(combo) + 1):
+            if seq[start:start+len(combo)] == combo:
+                # position of the **answer only**
+                ans_start = start + len(prefix_ids)
+                ans_end   = ans_start + len(target_ids)     # exclusive
+                labels[i, ans_start:ans_end] = \
+                    input_ids[i, ans_start:ans_end]
                 break
         else:
-            raise ValueError("Target sequence not found in input_ids — template mismatch?")
+            raise ValueError("Target sequence not found — template mismatch?")
 
-    # Ignore pad tokens
+    # never train on padding
     labels[input_ids == pad_token_id] = IGNORE_INDEX
     return labels
 

@@ -26,12 +26,15 @@ class VLMEnsembleAttackingSystem(lightning.LightningModule):
         super().__init__()
         tgt_sizes = None
         self.wandb_config = wandb_config
-        if wandb_config["regularization_kwargs"]:
+        regularization_kwargs = None
+        self.use_steering_reg = False
+        if "regularization_kwargs" in wandb_config.keys():
+            regularization_kwargs = wandb_config["regularization_kwargs"]
             self.use_steering_reg = wandb_config["regularization_kwargs"]["use_steering_reg"]
         self.vlm_ensemble = VLMEnsemble(
             model_strs=wandb_config["models_to_attack"],
             model_generation_kwargs=wandb_config["model_generation_kwargs"],
-            regularization_args=wandb_config["regularization_kwargs"],
+            regularization_args=regularization_kwargs,
             precision=wandb_config["lightning_kwargs"]["precision"],
             image_size=wandb_config["image_kwargs"]["image_size"]
         )
@@ -160,10 +163,9 @@ class VLMEnsembleAttackingSystem(lightning.LightningModule):
         self, batch: Dict[str, Dict[str, torch.Tensor]], batch_idx: int
     ) -> torch.Tensor:
         # https://pytorch-lightning.readthedocs.io/en/latest/common/lightning_module.html#training_step
-        print("Image")
-        print(self.tensor_image.shape)
-        print(self.tensor_image)
-
+        if self.use_steering_reg:
+            if "MiniCPM-V-2_6" in self.vlm_ensemble.vlms_dict.keys():
+                self.vlm_ensemble.vlms_dict["MiniCPM-V-2_6"]._hidden_layers.clear()
         losses_per_model: Dict[str, torch.Tensor] = self.vlm_ensemble.compute_loss(
             image=self.tensor_image,
             text_data_by_model=batch,
@@ -172,9 +174,25 @@ class VLMEnsembleAttackingSystem(lightning.LightningModule):
             if self.use_steering_reg:
                 if loss_str=="InternVL2-8B":
                     intern_model = self.vlm_ensemble.vlms_dict[loss_str]
-                    proj = torch.einsum("bd,d->b", intern_model._hidden, intern_model.r)
-                    reg_loss = (proj ** 2).mean()
+                    # self._hidden_layers has one tensor per layer
+                    proj_sq = [
+                        torch.einsum("bd,d->b", h, intern_model.r).pow(2)   # (B,)
+                        for h in intern_model._hidden_layers
+                    ]
+                    reg_loss = torch.mean(torch.stack(proj_sq))    # scalar
+
                     total_loss = (1 - intern_model.beta) * loss_val + intern_model.beta * reg_loss
+                    losses_per_model[loss_str] = total_loss
+                elif loss_str=="MiniCPM-V-2_6":
+                    cpm = self.vlm_ensemble.vlms_dict[loss_str]
+                    # self._hidden_layers has one tensor per layer
+                    proj_sq = [
+                        torch.einsum("bd,d->b", h, cpm.r).pow(2)   # (B,)
+                        for h in cpm._hidden_layers
+                    ]
+                    reg_loss = torch.mean(torch.stack(proj_sq))    # scalar
+
+                    total_loss = (1 - cpm.beta) * loss_val + cpm.beta * reg_loss
                     losses_per_model[loss_str] = total_loss
                 self.log(
                     f"loss/{loss_str}",

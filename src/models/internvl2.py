@@ -5,9 +5,9 @@ import lightning
 import torch
 from typing import Any, Callable, Dict, List, Mapping, Optional
 from transformers import PreTrainedTokenizer
-
+from types import MethodType
 from src.models.base import VisionLanguageModel
-
+import torch.nn as nn
 
 from src.models.qwen_utils.visual import VisionTransformer
 
@@ -143,6 +143,11 @@ class InternVL2(VisionLanguageModel, lightning.LightningModule):
     ) -> torch.Tensor:
         device = self.model.device
         batch_size = input_ids.size(0)
+
+        # seq_len  = attention_mask.sum(-1).max().item()   # longest *real* token
+        # input_ids      = input_ids[:, -seq_len:]
+        # attention_mask = attention_mask[:, -seq_len:]
+        # labels         = labels[:, -seq_len:]
         # Since we only get a single image, we need to repeat it for the batch size.
         assert image.ndim == 5, f"Expected 4 dims, got {image.ndim}"
         # assert that we only have one image here
@@ -153,21 +158,20 @@ class InternVL2(VisionLanguageModel, lightning.LightningModule):
         image_seq_len = image.shape[1]  # T
         image_flags = torch.tensor([1] * image_seq_len, dtype=torch.long, device=device)
         image_flags = image_flags.unsqueeze(0).repeat(batch_size, 1)
-        
-        torch.set_printoptions(threshold=float('inf'))
-        # print(image.squeeze(0).shape)
-        print(str(input_ids))
-        print(str(attention_mask))
-        print(str(image_flags))
 
-
-        outputs = self.model(
-            input_ids=input_ids.to(device=device),
-            pixel_values=image.squeeze(0).to(torch.bfloat16).to(device=device),
-            attention_mask=attention_mask.to(device=device),
-            image_flags = image_flags.to(device=device),
-            labels=labels.to(device=device),
-        )
+        # torch.set_printoptions(threshold=10000)
+        # print("seq_len in compute_loss :", input_ids[0].numel())
+        # print(f"First input_ids: {input_ids[0]}")
+        # print(f"First attention_mask: {attention_mask[0]}")
+        # print(f"First labels: {labels[0]}")
+        with torch.autocast(device_type='cuda', dtype=self.precision_dtype):
+            outputs = self.model(
+                input_ids=input_ids.to(device=device),
+                pixel_values=image.squeeze(0).to(device=device, dtype=self.precision_dtype),
+                attention_mask=attention_mask.to(device=device),
+                image_flags = image_flags.to(device=device),
+                labels=labels.to(device=device),
+            )
         print("LOSS")
         print(outputs.loss.item())
         return outputs.loss
@@ -192,17 +196,13 @@ class InternVL2(VisionLanguageModel, lightning.LightningModule):
         pad_token_id = self.tokenizer.convert_tokens_to_ids(self.tokenizer.pad_token)
 
         prompt_texts = []
-        # print(num_patches_list)
-        # print(prompts)
-        # print(targets)
 
-        for prompt, target, num_patches in zip(prompts, targets, num_patches_list):
+        for prompt, target in zip(prompts, targets):
             # Construct image placeholder with visual tokens
             prompt_w_image_tag = f"<image>\n{prompt}"
             query = format_instruction_internvl(prompt_w_image_tag)
-            for num_patch in num_patches:
-                visual_token_str = IMG_START_TOKEN + (IMG_CONTEXT_TOKEN * NUM_IMAGE_TOKENS * num_patch) + IMG_END_TOKEN
-                query = query.replace('<image>', visual_token_str, 1)
+            visual_token_str = IMG_START_TOKEN + (IMG_CONTEXT_TOKEN * NUM_IMAGE_TOKENS) + IMG_END_TOKEN
+            query = query.replace('<image>', visual_token_str, 1)
             if target is not None:
                 query = query + target + "<|im_end|>"
             #image_plus_prompt = f"{visual_token_str}\n{prompt}"
@@ -210,12 +210,8 @@ class InternVL2(VisionLanguageModel, lightning.LightningModule):
         
         model_inputs = self.tokenizer(prompt_texts, padding=True, truncation=False, return_tensors='pt')
         results = {}
-        results["input_ids"] = model_inputs.input_ids
-        results["attention_mask"] = model_inputs.attention_mask
-
-
-
-        
+        results["input_ids"] = model_inputs["input_ids"]
+        results["attention_mask"] = model_inputs["attention_mask"]
         input_ids = results["input_ids"]
         attention_mask = results["attention_mask"]
         if targets[0] is not None:
@@ -229,27 +225,30 @@ class InternVL2(VisionLanguageModel, lightning.LightningModule):
 
         if not self.already_logged_text:
             torch.set_printoptions(threshold=10000)
-            # first_text = prompt_texts[0]
-            # print(f"First text: {first_text}")
-            print(f"First input_ids: {input_ids[0]}")
-            print(f"First attention_mask: {attention_mask[0]}")
+            first_text = prompt_texts[0]
+            print(f"First text: {first_text}")
+            print(f"First prmpt: {prompts[0]}")
+            print(f"First target: {targets[0]}")
+            print(f"First input_ids: {results['input_ids'][0]}")
+            print(f"First attention_mask: {results['attention_mask'][0]}")
             print(f"First labels: {results['labels'][0]}")
-            if len(input_ids) > 1:
-                print(f"Second input ids: {input_ids[1]}")
-                print(f"Second attention_mask: {attention_mask[1]}")
-                print(f"Second labels: {results['labels'][1]}")
+            print("seq_len in converter :", results["input_ids"][0].numel())
+
+            # # if len(input_ids) > 1:
+            #     print(f"Second input ids: {input_ids[1]}")
+            #     print(f"Second attention_mask: {attention_mask[1]}")
+            #     print(f"Second labels: {results['labels'][1]}")
             # non_minus_100 = [r for r in results["labels"][0] if r != IGNORE_INDEX]
             # non_minus_100_text = self.tokenizer.decode(non_minus_100)
             # print(f"Example text that we calculate loss on: {non_minus_100_text}")
             torch.set_printoptions(profile="default")
             self.already_logged_text = True
-
         return results
 
     @torch.inference_mode()
     def generate(self, image: torch.Tensor, prompts: List[str]) -> List[str]:
         # We should only have a single image.
-        
+        self.remove_hidden_hook()
         assert image.shape[0] == 1, print(image.shape[0])
         assert image.ndim == 5, f"Expected (1, p, 3, H, W), got {image.shape}"
         # we have (1, 3, h,w) , we want (3, H, W)
@@ -332,26 +331,63 @@ class InternVL2(VisionLanguageModel, lightning.LightningModule):
             self.model.mlp1.requires_grad_(False)
             self.model.mlp1.eval()
 
-    def _capture_hidden(self):
-        # 1) clear any previous hook (e.g., when re-initialising the trainer)
-        if getattr(self, "_iris_hook", None) is not None:
-            self._iris_hook.remove()
-            self._iris_hook = None
+    def _capture_hidden(
+        self,
+        layer_idx: int | None = None,        # None  -> all layers
+        track_grad: bool = True,
+    ):
+        """
+        If `layer_idx` is an int, capture that single layer (old behaviour).
+        If None, capture *every* decoder block (like the CPM helper).
+        Results:
+            ─ single layer  → self._hidden   (Tensor)
+            ─ all layers    → self._hidden_layers (list[Tensor])
+        """
+        # 1) remove previous hooks
+        self.remove_hidden_hooks()
 
-        self._hidden = None              # will hold the captured activation
+        # 2) configure storage
+        if layer_idx is None:
+            self._hidden_layers: list[torch.Tensor] = []
+        else:
+            self._hidden = None
 
-        def hook(_module, _input, output):
-            # output shape is (batch, seq_len, hidden)
-            hidden = output[0]
+        # 3) helper that returns a proper hook
+        def make_hook(idx):
+            def hook(_mod, _inp, out):
+                hidden = out[0]
+                vec = hidden[:, self.pos_idx, :]
+                if not track_grad:
+                    vec = vec.detach()
 
-            self._hidden = hidden[:, self.pos_idx, :]
+                if layer_idx is None:           # collecting many
+                    self._hidden_layers.append(vec)
+                else:                           # collecting one
+                    if idx == layer_idx:
+                        self._hidden = vec
+            return hook
 
-        # 2) pick the decoder block in InternVL:
-        #    self.model.language_model.model.layers is a ModuleList
-        layer = self.model.language_model.model.layers[self.layer_idx]
+        # 4) attach hooks
+        self._iris_handles: list = []
+        layers = self.model.language_model.model.layers
+        if layer_idx is None:
+            for i, blk in enumerate(layers):
+                h = blk.register_forward_hook(make_hook(i))
+                self._iris_handles.append(h)
+        else:
+            blk = layers[layer_idx]
+            h = blk.register_forward_hook(make_hook(layer_idx))
+            self._iris_handles.append(h)
 
-        # 3) attach the hook and keep a reference so we can remove it later
-        self._iris_hook = layer.register_forward_hook(hook)
+    # <<< NEW / RENAMED >>>
+    def remove_hidden_hooks(self):
+        """Remove any hooks created by _capture_hidden."""
+        for h in getattr(self, "_iris_handles", []):
+            h.remove()
+        self._iris_handles = []
+        # clear cached outputs to avoid stale tensors holding memory
+        self._hidden = None
+        self._hidden_layers = []
 
 def only_assistant_response(starting_text: str, response: str) -> str:
     assert starting_text in response, f"Expected {starting_text} to be in {response}"
@@ -398,6 +434,17 @@ def make_labels(
     # Padding tokens stay ignored
     labels[input_ids == pad_token_id] = IGNORE_INDEX
     return labels
+
+def only_assistant_response(starting_text: str, response: str) -> str:
+    assert starting_text in response, f"Expected {starting_text} to be in {response}"
+    # remove everything before and including the assistant token
+    new_response = response.split(starting_text)[1]
+    # # remove the final \n
+    # new_response = new_response[:-1]
+    return new_response
+
+IGNORE_INDEX = -100  # standard for ignoring in loss
+
 
 
     

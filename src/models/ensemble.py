@@ -162,6 +162,7 @@ class VLMEnsemble(lightning.LightningModule):
                 vlm = MiniCPMV26(
                     model_str=model_str,
                     generation_kwargs=generation_kwargs,
+                    regularization_args=regularization_args,
                     precision=precision,
                     image_size=image_size
                 )
@@ -286,23 +287,19 @@ class VLMEnsemble(lightning.LightningModule):
             elif "MiniCPM" in model_name:
                 handles[model_name] = torch.jit.fork(
                     model_wrapper.compute_loss,
-                    image=image.to(model_wrapper_device, non_blocking=non_blocking),
-                    input_ids=text_data_by_model[model_name]["input_ids"].to(
-                        model_wrapper_device,
-                        non_blocking=non_blocking,
-                    ),
-                    attention_mask=text_data_by_model[model_name]["attention_mask"].to(
-                        model_wrapper_device,
-                        non_blocking=non_blocking,
-                    ),
-                    labels=text_data_by_model[model_name]["labels"].to(
-                        model_wrapper_device,
-                        non_blocking=non_blocking,
-                    ),
-                    image_bound=text_data_by_model[model_name]["image_bound"].to(
-                        model_wrapper_device,
-                        non_blocking=non_blocking,
-                    ),
+                    image=image,
+                    input_ids=text_data_by_model[model_name]["input_ids"],
+                    attention_mask=text_data_by_model[model_name]["attention_mask"],
+                    labels=text_data_by_model[model_name]["labels"],
+                    image_bound=text_data_by_model[model_name]["image_bound"],
+                )
+            elif "InternVL2-8B" in model_name:
+                handles[model_name] = torch.jit.fork(
+                    model_wrapper.compute_loss,
+                    image=image,
+                    input_ids=text_data_by_model[model_name]["input_ids"],
+                    attention_mask=text_data_by_model[model_name]["attention_mask"],
+                    labels=text_data_by_model[model_name]["labels"],
                 )
             else:
                 handles[model_name] = torch.jit.fork(

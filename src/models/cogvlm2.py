@@ -127,21 +127,24 @@ class CogVLM2(VisionLanguageModel, lightning.LightningModule):
         print(input_by_model.keys())
         if not self.already_logged_text:
             torch.set_printoptions(threshold=10000)
+            print(prompts)
+            print(targets)
             # first_text = prompt_texts[0]
             # print(f"First text: {first_text}")
-            print(f"First input_ids: {input_by_model['input_ids'][0]}")
-            print(f"First attention_mask: {input_by_model['attention_mask'][0]}")
-            print(f"First labels: {results['labels'][0]}")
-            if len(input_by_model['input_ids']) > 1:
-                print(f"Second input ids: {input_by_model['input_ids'][1]}")
-                print(f"Second attention_mask: {input_by_model['attention_mask'][1]}")
-                print(f"Second labels: {results['labels'][1]}")
+            # print(f"First input_ids: {input_by_model['input_ids'][0]}")
+            # print(f"First attention_mask: {input_by_model['attention_mask'][0]}")
+            # print(f"First labels: {results['labels'][0]}")
+            # if len(input_by_model['input_ids']) > 1:
+                # print(f"Second input ids: {input_by_model['input_ids'][1]}")
+                # print(f"Second attention_mask: {input_by_model['attention_mask'][1]}")
+                # print(f"Second labels: {results['labels'][1]}")
             # non_minus_100 = [r for r in results["labels"][0] if r != IGNORE_INDEX]
             # non_minus_100_text = self.tokenizer.decode(non_minus_100)
             # print(f"Example text that we calculate loss on: {non_minus_100_text}")
             torch.set_printoptions(profile="default")
             self.already_logged_text = True
-
+        import pdb
+        pdb.set_trace()
         return results
 
     @torch.inference_mode()
