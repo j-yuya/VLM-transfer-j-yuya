@@ -93,12 +93,11 @@ class CogVLM2(VisionLanguageModel, lightning.LightningModule):
         repeated_image = image.repeat(B, 1, 1, 1)  # [B, C, H, W]
         images = [[img.to(torch.bfloat16).to(device=device)] for img in repeated_image]
 
-        # print(image)
-        # print(image.shape)
-        # print(input_ids.shape)
-        # print(attention_mask.shape)
-        # print(token_type_ids.shape)
-        # print(labels.shape)
+        torch.set_printoptions(threshold=10000)
+        print("seq_len in compute_loss :", input_ids[0].numel())
+        print(f"First input_ids: {input_ids[0]}")
+        print(f"First attention_mask: {attention_mask[0]}")
+        print(f"First labels: {labels[0]}")
 
         outputs = self.model(
             input_ids=input_ids.to(device),
@@ -127,8 +126,12 @@ class CogVLM2(VisionLanguageModel, lightning.LightningModule):
         print(input_by_model.keys())
         if not self.already_logged_text:
             torch.set_printoptions(threshold=10000)
-            print(prompts)
-            print(targets)
+            print(f"First prmpt: {prompts[0]}")
+            print(f"First target: {targets[0]}")
+            print(f"First input_ids: {results['input_ids'][0]}")
+            print(f"First attention_mask: {results['attention_mask'][0]}")
+            print(f"First labels: {results['labels'][0]}")
+            print("seq_len in converter :", results["input_ids"][0].numel())
             # first_text = prompt_texts[0]
             # print(f"First text: {first_text}")
             # print(f"First input_ids: {input_by_model['input_ids'][0]}")
@@ -143,8 +146,7 @@ class CogVLM2(VisionLanguageModel, lightning.LightningModule):
             # print(f"Example text that we calculate loss on: {non_minus_100_text}")
             torch.set_printoptions(profile="default")
             self.already_logged_text = True
-        import pdb
-        pdb.set_trace()
+
         return results
 
     @torch.inference_mode()
@@ -224,6 +226,7 @@ class CogVLM2(VisionLanguageModel, lightning.LightningModule):
 
             if answer_ids is not None:
                 labels = [-100] * (len(input_ids) - len(answer_ids)) + answer_ids
+                labels[-1] = -100
             else:
                 labels = None
 

@@ -349,22 +349,10 @@ class VLMEnsemble(lightning.LightningModule):
                 handles[model_name] = torch.jit.fork(
                     model_wrapper.compute_loss,
                     image=images[model_name].to(model_wrapper_device, non_blocking=non_blocking),
-                    input_ids=text_data_by_model[model_name]["input_ids"].to(
-                        model_wrapper_device,
-                        non_blocking=non_blocking,
-                    ),
-                    attention_mask=text_data_by_model[model_name]["attention_mask"].to(
-                        model_wrapper_device,
-                        non_blocking=non_blocking,
-                    ),
-                    labels=text_data_by_model[model_name]["labels"].to(
-                        model_wrapper_device,
-                        non_blocking=non_blocking,
-                    ),
-                    token_type_ids=text_data_by_model[model_name]["token_type_ids"].to(
-                        model_wrapper_device,
-                        non_blocking=non_blocking,
-                    ),
+                    input_ids=text_data_by_model[model_name]["input_ids"],
+                    attention_mask=text_data_by_model[model_name]["attention_mask"],
+                    labels=text_data_by_model[model_name]["labels"],
+                    token_type_ids=text_data_by_model[model_name]["token_type_ids"],
                 )
             elif "MiniCPM" in model_name:
                 handles[model_name] = torch.jit.fork(
