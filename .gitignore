@@ -8,3 +8,7 @@ wandb/
 eval_data
 runs
 **/data/
+prompts_and_targets/advbench/tokenized/
+prompts_and_targets/generated/tokenized/
+prompts_and_targets/anthropic_hhh/tokenized/
+.npz

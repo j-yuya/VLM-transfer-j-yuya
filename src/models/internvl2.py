@@ -120,11 +120,12 @@ class InternVL2(VisionLanguageModel, lightning.LightningModule):
             trust_remote_code=True).eval().cuda()
         
         if regularization_args and regularization_args["use_steering_reg"]:
+            self.use_steering_reg = True
             self.layer_idx=regularization_args["layer_idx"]
             self.pos_idx=regularization_args["pos_idx"]
             self._capture_hidden()
             r = torch.load(regularization_args["direction_path"])  
-            self.r = (r / r.norm()).to(dtype=torch.bfloat16, device=self.model.device)
+            self.r = (r / r.norm(dim=-1, keepdim=True)).to(dtype=torch.bfloat16, device=self.model.device)
             self.beta = regularization_args["beta"]
         #self.already_logged_new_mask: bool = False  # For print debugigng
         #self.already_logged_text: bool = False  # For print debugigng
@@ -226,13 +227,13 @@ class InternVL2(VisionLanguageModel, lightning.LightningModule):
         if not self.already_logged_text:
             torch.set_printoptions(threshold=10000)
             first_text = prompt_texts[0]
-            print(f"First text: {first_text}")
-            print(f"First prmpt: {prompts[0]}")
-            print(f"First target: {targets[0]}")
-            print(f"First input_ids: {results['input_ids'][0]}")
-            print(f"First attention_mask: {results['attention_mask'][0]}")
-            print(f"First labels: {results['labels'][0]}")
-            print("seq_len in converter :", results["input_ids"][0].numel())
+            # print(f"First text: {first_text}")
+            # print(f"First prmpt: {prompts[0]}")
+            # print(f"First target: {targets[0]}")
+            # print(f"First input_ids: {results['input_ids'][0]}")
+            # print(f"First attention_mask: {results['attention_mask'][0]}")
+            # print(f"First labels: {results['labels'][0]}")
+            # print("seq_len in converter :", results["input_ids"][0].numel())
 
             # # if len(input_ids) > 1:
             #     print(f"Second input ids: {input_ids[1]}")
@@ -248,7 +249,7 @@ class InternVL2(VisionLanguageModel, lightning.LightningModule):
     @torch.inference_mode()
     def generate(self, image: torch.Tensor, prompts: List[str]) -> List[str]:
         # We should only have a single image.
-        self.remove_hidden_hook()
+        self.remove_hidden_hooks()
         assert image.shape[0] == 1, print(image.shape[0])
         assert image.ndim == 5, f"Expected (1, p, 3, H, W), got {image.shape}"
         # we have (1, 3, h,w) , we want (3, H, W)
@@ -331,11 +332,7 @@ class InternVL2(VisionLanguageModel, lightning.LightningModule):
             self.model.mlp1.requires_grad_(False)
             self.model.mlp1.eval()
 
-    def _capture_hidden(
-        self,
-        layer_idx: int | None = None,        # None  -> all layers
-        track_grad: bool = True,
-    ):
+    def _capture_hidden(self, layer_idx: int | None = None, track_grad = True):
         """
         If `layer_idx` is an int, capture that single layer (old behaviour).
         If None, capture *every* decoder block (like the CPM helper).
@@ -354,17 +351,16 @@ class InternVL2(VisionLanguageModel, lightning.LightningModule):
 
         # 3) helper that returns a proper hook
         def make_hook(idx):
-            def hook(_mod, _inp, out):
-                hidden = out[0]
+            def hook(_mod, inp):                  # ⟵ pre-block hook
+                hidden = inp[0] if isinstance(inp, (tuple, list)) else inp
                 vec = hidden[:, self.pos_idx, :]
                 if not track_grad:
                     vec = vec.detach()
 
                 if layer_idx is None:           # collecting many
                     self._hidden_layers.append(vec)
-                else:                           # collecting one
-                    if idx == layer_idx:
-                        self._hidden = vec
+                elif idx == layer_idx:          # collecting one
+                    self._hidden = vec
             return hook
 
         # 4) attach hooks
@@ -372,11 +368,11 @@ class InternVL2(VisionLanguageModel, lightning.LightningModule):
         layers = self.model.language_model.model.layers
         if layer_idx is None:
             for i, blk in enumerate(layers):
-                h = blk.register_forward_hook(make_hook(i))
+                h = blk.register_forward_pre_hook(make_hook(i))
                 self._iris_handles.append(h)
         else:
             blk = layers[layer_idx]
-            h = blk.register_forward_hook(make_hook(layer_idx))
+            h = blk.register_forward_pre_hook(make_hook(layer_idx))
             self._iris_handles.append(h)
 
     # <<< NEW / RENAMED >>>
@@ -385,7 +381,6 @@ class InternVL2(VisionLanguageModel, lightning.LightningModule):
         for h in getattr(self, "_iris_handles", []):
             h.remove()
         self._iris_handles = []
-        # clear cached outputs to avoid stale tensors holding memory
         self._hidden = None
         self._hidden_layers = []
 

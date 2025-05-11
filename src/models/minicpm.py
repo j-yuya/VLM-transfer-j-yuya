@@ -76,7 +76,7 @@ class MiniCPMV26(VisionLanguageModel, lightning.LightningModule):
             self.pos_idx=regularization_args["pos_idx"]
             self._capture_hidden()
             r = torch.load(regularization_args["direction_path"])  
-            self.r = (r / r.norm()).to(dtype=torch.bfloat16, device=self.model.device)
+            self.r = (r / r.norm(dim=-1, keepdim=True)).to(dtype=torch.bfloat16, device=self.model.device)
             self.beta = regularization_args["beta"]
 
         #self.already_logged_new_mask: bool = False  # For print debugigng
@@ -358,11 +358,7 @@ class MiniCPMV26(VisionLanguageModel, lightning.LightningModule):
 
         return inputs
     
-    def _capture_hidden(
-        self,
-        layer_idx: int | None = None,      # None ➜ all layers (default)
-        track_grad: bool = True,
-    ):
+    def _capture_hidden(self, layer_idx: int | None = None, track_grad = True):
         """
         Capture hidden state(s) at token position `self.pos_idx`.
 
@@ -385,8 +381,8 @@ class MiniCPMV26(VisionLanguageModel, lightning.LightningModule):
 
         # 3. helper that builds a hook
         def make_hook(idx):
-            def hook(_mod, _inp, out):
-                hidden = out[0] if isinstance(out, (tuple, list)) else out
+            def hook(_mod, inp):                  # ⟵ pre-block hook
+                hidden = inp[0] if isinstance(inp, (tuple, list)) else inp
                 vec = hidden[:, self.pos_idx, :]
                 if not track_grad:
                     vec = vec.detach()
@@ -402,11 +398,11 @@ class MiniCPMV26(VisionLanguageModel, lightning.LightningModule):
         layers = self.model.llm.model.layers      # Mini-CPM path
         if layer_idx is None:
             for i, blk in enumerate(layers):
-                h = blk.register_forward_hook(make_hook(i))
+                h = blk.register_forward_pre_hook(make_hook(i))
                 self._iris_handles.append(h)
         else:
             blk = layers[layer_idx]
-            h = blk.register_forward_hook(make_hook(layer_idx))
+            h = blk.register_forward_pre_hook(make_hook(layer_idx))
             self._iris_handles.append(h)
     
     def remove_hidden_hooks(self):
