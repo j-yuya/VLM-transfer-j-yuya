@@ -8,6 +8,8 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 from typing import Dict, List
 
 from prompts_and_targets.generated.llm_api import ModelAPI
+from strong_reject.evaluate import evaluate_dataset
+from datasets import Dataset
 
 
 class HarmBenchEvaluator(torch.nn.Module):
@@ -236,3 +238,19 @@ class Claude3OpusEvaluator(torch.nn.Module):
             else:
                 float_judgements.append((float(judgement) - 1.0) / 4.0)
         return np.mean(float_judgements)
+
+
+class StrongRejectEvaluator(torch.nn.Module):
+    def evaluate(self, prompts: List[str], generations: List[str]) -> List[float]:
+        dataset = Dataset.from_dict(
+            {
+                "forbidden_prompt": prompts,
+                "response": generations
+            }
+        )
+        evaluations = evaluate_dataset(dataset, ["strongreject_finetuned"])
+        print(evaluations["score"])
+        return evaluations["score"]
+    @staticmethod
+    def compute_score(judgements: List[float]) -> float:
+        return np.mean(judgements)

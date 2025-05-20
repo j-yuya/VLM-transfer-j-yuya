@@ -154,11 +154,24 @@ def load_prompts_and_targets(
         prompts_and_targets_path = os.path.join(
             prompts_and_targets_dir, "advbench_intern", f"{split}.csv"
         )
+    elif dataset=="advbench_intern_dir_adv_100_more_harmful":
+        if max_prompt_len is None:
+            max_prompt_len = ADVBENCH_DEFAULT_PROMPT_MAX_LEN
+        prompts_and_targets_path = os.path.join(
+            prompts_and_targets_dir, "advbench_intern_dir_adv_100_more_harmful", f"{split}.csv"
+        )
+        
     elif dataset=="advbench_minicpm":
         if max_prompt_len is None:
             max_prompt_len = ADVBENCH_DEFAULT_PROMPT_MAX_LEN
         prompts_and_targets_path = os.path.join(
             prompts_and_targets_dir, "advbench_minicpm", f"{split}.csv"
+        )
+    elif dataset=="advbench_minicpm_dir_adv_100":
+        if max_prompt_len is None:
+            max_prompt_len = ADVBENCH_DEFAULT_PROMPT_MAX_LEN
+        prompts_and_targets_path = os.path.join(
+            prompts_and_targets_dir, "advbench_minicpm_dir_adv_100", f"{split}.csv"
         )
     elif dataset == "rylan_anthropic_hhh":
         if max_prompt_len is None:
@@ -250,9 +263,17 @@ def tokenize_prompts_and_targets_using_vlm_ensemble(
         tokenized_dir_path = os.path.join(
             prompts_and_targets_dir, "advbench_intern", "tokenized"
         )
+    elif dataset == "advbench_intern_dir_adv_100_more_harmful":
+        tokenized_dir_path = os.path.join(
+            prompts_and_targets_dir, "advbench_intern_dir_adv_100_more_harmful", "tokenized"
+        )
     elif dataset == "advbench_minicpm":
         tokenized_dir_path = os.path.join(
             prompts_and_targets_dir, "advbench_minicpm", "tokenized"
+        )
+    elif dataset == "advbench_minicpm_dir_adv_100":
+        tokenized_dir_path = os.path.join(
+            prompts_and_targets_dir, "advbench_minicpm_dir_adv_100", "tokenized"
         )
     elif dataset == "rylan_anthropic_hhh":
         tokenized_dir_path = os.path.join(

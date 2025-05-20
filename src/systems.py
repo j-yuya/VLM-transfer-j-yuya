@@ -6,10 +6,13 @@ import torch.optim
 import torchvision.transforms
 from typing import Any, Dict, List, Optional, Tuple
 import wandb
-
+import random
 from src.models.ensemble import VLMEnsemble
 from src.models.evaluators import HarmBenchEvaluator, LlamaGuard2Evaluator
-from src.utils import create_initial_image, create_intern_image, reconstruct_to_original_size, create_cog_image, cog_reverse_image, create_minicpm_image, reconstruct_cpm_image, preprocess_model_image
+from src.utils import create_initial_image, create_intern_image, reconstruct_to_original_size, create_cog_image, cog_reverse_image, create_minicpm_image, reconstruct_cpm_image, preprocess_model_image, load_image_from_image
+import torchvision.transforms.functional as TF
+from PIL import Image, ImageDraw, ImageFont
+import torch.nn.functional as F
 
 
 class AttackType(Enum):
@@ -177,28 +180,56 @@ class VLMEnsembleAttackingSystem(lightning.LightningModule):
                 if loss_str=="InternVL2-8B":
                     intern_model = self.vlm_ensemble.vlms_dict[loss_str]
                     proj_sq = [
-                        torch.einsum("bd,d->b", h, intern_model.r).pow(2)   # (B,)
+                        torch.einsum("bd,d->b", h, intern_model.r).pow(2)    # (B,)
                         for h in intern_model._hidden_layers
                     ]
-                    reg_loss = torch.mean(torch.stack(proj_sq))    # scalar
-                    total_loss = (1 - intern_model.beta) * loss_val + intern_model.beta * reg_loss
+                    reg_loss = torch.stack([t.mean() for t in proj_sq]).mean()  
+                    regularization_factor = intern_model.beta * reg_loss
+                    ce_factor = (1 - intern_model.beta) * loss_val
+                    total_loss =  ce_factor + regularization_factor 
                     losses_per_model[loss_str] = total_loss
                 elif loss_str=="MiniCPM-V-2_6":
                     cpm = self.vlm_ensemble.vlms_dict[loss_str]
                     # self._hidden_layers has one tensor per layer
                     proj_sq = [
-                        torch.einsum("bd,d->b", h, cpm.r).pow(2)   # (B,)
+                        torch.einsum("bd,d->b", h, cpm.r).pow(2)    # (B,)
                         for h in cpm._hidden_layers
                     ]
-                    reg_loss = torch.mean(torch.stack(proj_sq))     # scalar
-                    total_loss = (1 - cpm.beta) * loss_val + cpm.beta * reg_loss
+                    reg_loss = torch.stack([t.mean() for t in proj_sq]).mean()  
+                    regularization_factor = cpm.beta * reg_loss
+                    ce_factor = (1 - cpm.beta) * loss_val
+                    total_loss =  ce_factor + regularization_factor 
                     losses_per_model[loss_str] = total_loss
                 self.log(
                     f"loss/{loss_str}",
-                    loss_val.detach().item(),
+                    total_loss.detach().item(),
                     on_step=True,
                     on_epoch=False,
                     sync_dist=True,
+                )
+                self.log(
+                    f"loss_reg/{loss_str}",
+                    regularization_factor.detach().item(),
+                    on_step=True,
+                    on_epoch=False,
+                    sync_dist=True,
+                )
+                self.log(
+                    f"loss_reg_unweighted/{loss_str}",
+                    reg_loss.detach().item(),
+                    on_step=True,
+                    on_epoch=False,
+                    sync_dist=True,
+                )
+                self.log(
+                    f"loss_ce/{loss_str}",
+                    ce_factor.detach().item(),
+                    on_step=True,
+                    on_epoch=False,
+                    sync_dist=True,
+                )
+                losses_per_model["avg"] = torch.mean(
+                    torch.stack(list(losses_per_model.values()))
                 )
             else:
                 self.log(
@@ -234,7 +265,6 @@ class VLMEnsembleAttackingSystem(lightning.LightningModule):
             % self.wandb_config["lightning_kwargs"]["log_image_every_n_steps"]
         ) == 0:
             # TODO: Add handling for additional image dim (4)
-            print(self.tensor_image.shape)
 
             log_image = self.tensor_image.detach().cpu()
             if any("Intern" in model for model in self.wandb_config["models_to_attack"]):
@@ -296,7 +326,323 @@ class VLMEnsembleAttackingSystem(lightning.LightningModule):
         super().optimizer_step(*args, **kwargs)
         self.optimizer_step_counter += 1
         with torch.no_grad():
-            self.tensor_image.data = self.tensor_image.data.clamp(min=0.0, max=1.0)
+            if "InternVL2-8B" in self.vlm_ensemble.vlms_dict.keys():
+                IMAGENET_MEAN = (0.485, 0.456, 0.406)
+                IMAGENET_STD  = (0.229, 0.224, 0.225)
+
+                
+                bounds = [(0.0 - m) / s for m, s in zip(IMAGENET_MEAN, IMAGENET_STD)]
+                _min   = torch.tensor(bounds, device=self.tensor_image.device, dtype=self.tensor_image.dtype)[None, :, None, None]
+                _max   = torch.tensor([(1.0 - m) / s for m, s in zip(IMAGENET_MEAN, IMAGENET_STD)],
+                                    device=self.tensor_image.device, dtype=self.tensor_image.dtype)[None, :, None, None]
+            elif "MiniCPM-V-2_6" in self.vlm_ensemble.vlms_dict.keys():
+                CPM_MEAN = (0.5, 0.5, 0.5)
+                CPM_STD  = (0.5, 0.5, 0.5)
+
+                device = self.tensor_image.device
+                dtype  = self.tensor_image.dtype
+
+                mean = torch.tensor(CPM_MEAN, device=device, dtype=dtype)[:, None, None]  # (3,1,1)
+                std  = torch.tensor(CPM_STD,  device=device, dtype=dtype)[:, None, None]  # (3,1,1)
+
+                _min = (0.0 - mean) / std        # (3,1,1)  → broadcast to (3,14,14336)
+                _max = (1.0 - mean) / std
+            else:
+                _min = 0.0
+                _max = 1.0
+
+            self.tensor_image.data = self.tensor_image.data.clamp(min=_min, max=_max)
+
+            # dev, dtype = self.tensor_image.device, self.tensor_image.dtype
+            # img_denorm = unnormalize(self.tensor_image.squeeze(0)).clamp_(0, 1) 
+            # # print(img_denorm.shape)
+            # # img_orig = reconstruct_to_original_size_2(img_denorm.cpu(), is_normalised=False)
+            # # img_proj = project_to_low_res(img_orig.unsqueeze(0), 448, 224)
+            # patches = make_single_patch(img_denorm).to(dev, dtype=dtype)      
+            # self.tensor_image.data.copy_(patches)  
+
+
+def make_single_patch(img: torch.Tensor) -> torch.Tensor:
+    """
+    img: (3,448,448) in [0,1]  – already projected to low res
+    returns: (1,3,448,448) normalised with ImageNet mean/std  (on same device)
+    """
+    IMAGENET_MEAN = (0.485, 0.456, 0.406)
+    IMAGENET_STD = (0.229, 0.224, 0.225)
+    mean = torch.tensor(IMAGENET_MEAN, device=img.device,
+                        dtype=img.dtype).view(3,1,1)
+    std  = torch.tensor(IMAGENET_STD,  device=img.device,
+                        dtype=img.dtype).view(3,1,1)
+    return ((img - mean) / std).unsqueeze(0)          
+
+def project_to_low_res(img: torch.Tensor, HIGH, LOW) -> torch.Tensor:
+    """
+    img: (B, 3, 448, 448) in [0,1]  (or whatever range you use)
+    returns: same shape, but with only LOW×LOW degrees of freedom
+    """
+    print(img.shape)
+    # ↓ 1) shrink to LOW×LOW (bilinear keeps it differentiable)
+    img_small = F.interpolate(img, size=(LOW, LOW),
+                              mode='bilinear', align_corners=False, antialias=True)
+
+    # ↑ 2) blow it back up with *nearest* so every 8×8 block is constant
+    img_blocky = F.interpolate(img_small, size=(HIGH, HIGH), mode='nearest')
+    return img_blocky
+
+def unnormalize(img: torch.Tensor):
+    IMAGENET_MEAN = (0.485, 0.456, 0.406)
+    IMAGENET_STD = (0.229, 0.224, 0.225)
+    mean = torch.tensor(IMAGENET_MEAN, device=img.device,
+                        dtype=img.dtype).view(3,1,1)
+    std  = torch.tensor(IMAGENET_STD,  device=img.device,
+                        dtype=img.dtype).view(3,1,1)
+    return img * std + mean
+
+def reconstruct_to_original_size_2(
+    patches: torch.Tensor,              # (P,3,H,W)  *or*  (3,H,W)
+    patch_grid=(1, 1),
+    patch_size=448,
+    orig_size=None,                     # (H_orig, W_orig)  or None
+    is_normalised=True,                 # set False if already un-norm’d
+):
+    """
+    Stitch `num_x × num_y` patches back to a single image and optionally
+    resize to `orig_size`.
+
+    • `patch_grid` must correspond to how you split the image earlier.
+    • Accepts both batched and single-patch tensors.
+    """
+    # 0) ensure shape is (P,3,H,W)
+    if patches.dim() == 3:                           # (3,H,W) → add batch dim
+        patches = patches.unsqueeze(0)
+    elif patches.dim() != 4 or patches.shape[1] != 3:
+        raise ValueError("Expected (P,3,H,W) or (3,H,W) tensor.")
+
+    num_x, num_y = patch_grid
+    assert patches.shape[0] == num_x * num_y, (
+        f"Grid {patch_grid} expects {num_x*num_y} patches, "
+        f"but got {patches.shape[0]}.")
+
+    # 1) (optional) un-normalise
+    if is_normalised:
+        patches = unnormalize(patches)
+
+    # 2) stitch row by row
+    rows = []
+    for y in range(num_y):
+        row = torch.cat(
+            [patches[y * num_x + x] for x in range(num_x)], dim=2  # concat W
+        )                      # → (3, H, num_x*W)
+        rows.append(row)
+    full_image = torch.cat(rows, dim=1)               # concat H  → (3, H*ny, W*nx)
+
+    # 3) optional resize back to original resolution
+    if orig_size is not None:
+        full_image = F.interpolate(
+            full_image.unsqueeze(0),                  # add batch
+            size=orig_size,
+            mode="bicubic",
+            align_corners=False,
+        ).squeeze(0)
+
+    return full_image   # (3, H_out, W_out)
+
+
+# class VLMEnsembleAttackingSystem2(lightning.LightningModule):
+#     def __init__(
+#         self,
+#         wandb_config: Dict[str, Any],
+#     ):
+#         super().__init__()
+#         self.first_step = True
+#         tgt_sizes = None
+#         self.wandb_config = wandb_config
+#         regularization_kwargs = None
+#         self.use_steering_reg = False
+#         if "regularization_kwargs" in wandb_config.keys():
+#             regularization_kwargs = wandb_config["regularization_kwargs"]
+#             self.use_steering_reg = wandb_config["regularization_kwargs"]["use_steering_reg"]
+#         self.vlm_ensemble = VLMEnsemble(
+#             model_strs=wandb_config["models_to_attack"],
+#             model_generation_kwargs=wandb_config["model_generation_kwargs"],
+#             regularization_args=regularization_kwargs,
+#             precision=wandb_config["lightning_kwargs"]["precision"],
+#             image_size=wandb_config["image_kwargs"]["image_size"]
+#         )
+#         if any("Intern" in model for model in wandb_config["models_to_attack"]):
+#             tensor_image: torch.Tensor = create_intern_image(
+#             image_kwargs=wandb_config["image_kwargs"],
+#             seed=wandb_config["seed"],
+#             )
+#         elif any("cogvlm2" in model for model in wandb_config["models_to_attack"]):
+#             tensor_image: torch.Tensor = create_cog_image(
+#             image_kwargs=wandb_config["image_kwargs"],
+#             seed=wandb_config["seed"],
+#             )
+#         elif any("MiniCPM" in model for model in wandb_config["models_to_attack"]):
+#             tensor_image, tgt_sizes = create_minicpm_image(
+#             image_kwargs=wandb_config["image_kwargs"],
+#             seed=wandb_config["seed"],
+#             )
+#         else:
+#             # Load initial image plus prompt and target data.
+#             tensor_image: torch.Tensor = create_initial_image(
+#                 image_kwargs=wandb_config["image_kwargs"],
+#                 seed=wandb_config["seed"],
+#             )
+#         # print(f"tensor_image.shape: {tensor_image.shape}")
+#         # print(f"tensor_image: {tensor_image}")
+#         if tgt_sizes != None:
+#             self.tgt_sizes = tgt_sizes
+#         self.tensor_image = torch.nn.Parameter(tensor_image, requires_grad=True)
+#         self.convert_tensor_to_pil_image = torchvision.transforms.ToPILImage()
+#         self.optimizer_step_counter = 0
+
+#     def configure_optimizers(self) -> Dict:
+#         return None
+
+#     def predict_step(
+#         self, batch: Dict[str, Dict[str, torch.Tensor]], batch_idx: int
+#     ) -> torch.Tensor:
+#         # https://pytorch-lightning.readthedocs.io/en/latest/common/lightning_module.html#training_step
+#         if self.use_steering_reg:
+#             if "MiniCPM-V-2_6" in self.vlm_ensemble.vlms_dict.keys():
+#                 self.vlm_ensemble.vlms_dict["MiniCPM-V-2_6"]._hidden_layers.clear()
+#             elif "InternVL2-8B" in self.vlm_ensemble.vlms_dict.keys():
+#                 self.vlm_ensemble.vlms_dict["InternVL2-8B"]._hidden_layers.clear()
+#         if self.first_step:
+#             losses_per_model: Dict[str, torch.Tensor] = self.vlm_ensemble.compute_loss(
+#                 image=self.tensor_image,
+#                 text_data_by_model=batch,
+#             )
+#             self.first_step = False
+#             for loss_str, loss_val in losses_per_model.items():
+#                 if self.use_steering_reg:
+#                     if loss_str=="InternVL2-8B":
+#                         intern_model = self.vlm_ensemble.vlms_dict[loss_str]
+#                         proj_sq = [
+#                             torch.einsum("bd,d->b", h, intern_model.r).pow(2)   # (B,)
+#                             for h in intern_model._hidden_layers
+#                         ]
+#                         reg_loss = torch.mean(torch.stack(proj_sq))    # scalar
+#                         total_loss = (1 - intern_model.beta) * loss_val + intern_model.beta * reg_loss
+#                         losses_per_model[loss_str] = total_loss
+#                     elif loss_str=="MiniCPM-V-2_6":
+#                         cpm = self.vlm_ensemble.vlms_dict[loss_str]
+#                         # self._hidden_layers has one tensor per layer
+#                         proj_sq = [
+#                             torch.einsum("bd,d->b", h, cpm.r).pow(2)   # (B,)
+#                             for h in cpm._hidden_layers
+#                         ]
+#                         reg_loss = torch.mean(torch.stack(proj_sq))     # scalar
+#                         total_loss = (1 - cpm.beta) * loss_val + cpm.beta * reg_loss
+#                         losses_per_model[loss_str] = total_loss
+#                     self.log(
+#                         f"loss/{loss_str}",
+#                         loss_val.detach().item(),
+#                         on_step=True,
+#                         on_epoch=False,
+#                         sync_dist=True,
+#                     )
+#                 else:
+#                     self.log(
+#                         f"loss/{loss_str}",
+#                         loss_val.detach().item(),
+#                         on_step=True,
+#                         on_epoch=False,
+#                         sync_dist=True,
+#                     )
+#         for _ in range(self.n_iters):
+#             improved_any = False
+
+#             for _ in range(self.tries):
+#                 rnd_words = random.choices(self.word_list, k=len(imgs))
+
+#                 # build batch of candidate images + remember their meta
+#                 cand_imgs, meta = [], []
+#                 for i in range(len(imgs)):
+#                     img_, info = self.overlay_random_word(best_imgs[i].cpu(), rnd_words[i])
+#                     cand_imgs.append(img_)
+#                     meta.append(info)
+#                 cand_imgs = torch.stack(cand_imgs).to(device)
+
+#                 # evaluate
+#                 with torch.no_grad():
+#                     cand_loss = self.loss_fn(self.vlm(cand_imgs, prompts), targets)
+
+#                 # decide improvement per-example
+#                 better = cand_loss > best_loss if self.maximise else cand_loss < best_loss
+#                 if better.any():
+#                     improved_any = True
+#                     best_imgs[better] = cand_imgs[better]
+#                     best_loss[better] = cand_loss[better]
+#                     # store meta only on improved ones
+#                     for idx, flag in enumerate(better.tolist()):
+#                         if flag:
+#                             histories[idx].append(meta[idx])
+#                     break   # restart tries because state changed
+
+#             if not improved_any:          # no improvement in an entire outer-loop: stop early
+#                 break
+
+#         self.log(
+#             "optimizer_step_counter",
+#             self.optimizer_step_counter,
+#             on_step=True,
+#             on_epoch=False,
+#             sync_dist=True,
+#         )
+
+#         # if batch_idx == 0:
+#         #     print(torch.cuda.memory_summary())
+#         # for obj in gc.get_objects():
+#         #     try:
+#         #         if torch.is_tensor(obj) or (hasattr(obj, 'data') and torch.is_tensor(obj.data)):
+#         #             print(type(obj), obj.size())
+#         #     except:
+#         #         pass
+
+#         return losses_per_model["avg"]
+
+    
+#     def overlay_random_word(
+#         self,
+#         img: torch.Tensor,
+#         word: str,
+#         font: Optional[ImageFont.ImageFont] = None,
+#         angle_range: Tuple[int, int] = (-45, 45),
+#         scale_range: Tuple[int, int] = (14, 40),
+#     ) -> torch.Tensor:
+#         """
+#         Draw `word` on a CHW float tensor in [0,1] with random position, scale, angle.
+#         Returns *new* tensor; original is unchanged.
+#         """
+#         c, h, w = img.shape
+#         pil_base = TF.to_pil_image(img).convert("RGBA")
+
+#         # --- prepare text layer -------------------------------------------------
+#         font_sz = random.randint(*scale_range)
+#         if font is None:
+#             font = ImageFont.load_default()
+#         else:
+#             font = font.font_variant(size=font_sz)
+
+#         txt_w, txt_h = font.getsize(word)
+#         txt_layer = Image.new("RGBA", (txt_w, txt_h), (0, 0, 0, 0))
+#         ImageDraw.Draw(txt_layer).text((0, 0), word, fill=(255, 255, 255, 255), font=font)
+
+#         # random rotation
+#         angle = random.uniform(*angle_range)
+#         txt_layer = txt_layer.rotate(angle, expand=True)
+
+#         # random position (clip so it stays inside the canvas)
+#         max_x = max(1, w - txt_layer.width)
+#         max_y = max(1, h - txt_layer.height)
+#         pos = (random.randint(0, max_x), random.randint(0, max_y))
+
+#         # composite
+#         pil_base.alpha_composite(txt_layer, dest=pos)
+#         return TF.to_tensor(pil_base.convert("RGB")), {"word": word, "pos": pos, "angle": angle, "size": font_sz}
 
 
 class VLMEnsembleEvaluatingSystem(lightning.LightningModule):

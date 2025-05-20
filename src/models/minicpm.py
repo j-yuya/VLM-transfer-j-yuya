@@ -70,13 +70,15 @@ class MiniCPMV26(VisionLanguageModel, lightning.LightningModule):
         self.tgt_sizes=None
         self.image_sizes=None
         self.use_steering_reg = False
+        layers = self.model.llm.model.layers
         if regularization_args and regularization_args["use_steering_reg"]:
             self.use_steering_reg = True
+            self.orthogonalise_r = regularization_args.get("orthogonalise_r", False)
             self.layer_idx=regularization_args["layer_idx"]
             self.pos_idx=regularization_args["pos_idx"]
             self._capture_hidden()
             r = torch.load(regularization_args["direction_path"])  
-            self.r = (r / r.norm(dim=-1, keepdim=True)).to(dtype=torch.bfloat16, device=self.model.device)
+            self.r = (r / r.norm(dim=-1, keepdim=True) + 1e-8).to(dtype=torch.bfloat16, device=self.model.device)
             self.beta = regularization_args["beta"]
 
         #self.already_logged_new_mask: bool = False  # For print debugigng
@@ -189,11 +191,11 @@ class MiniCPMV26(VisionLanguageModel, lightning.LightningModule):
             # first_text = prompt_texts[0]
             # print(f"First text: {first_text}")
 
-            print(f"First prmpt: {prompts[0]}")
-            print(f"First target: {targets[0]}")
-            print(f"First input_ids: {input_by_model['input_ids'][0]}")
-            print(f"First attention_mask: {input_by_model['attention_mask'][0]}")
-            print(f"First labels: {results['labels'][0]}")
+            # print(f"First prmpt: {prompts[0]}")
+            # print(f"First target: {targets[0]}")
+            # print(f"First input_ids: {input_by_model['input_ids'][0]}")
+            # print(f"First attention_mask: {input_by_model['attention_mask'][0]}")
+            # print(f"First labels: {results['labels'][0]}")
             # if len(input_by_model['input_ids']) > 1:
             #     print(f"Second input ids: {input_by_model['input_ids'][1]}")
             #     print(f"Second attention_mask: {input_by_model['attention_mask'][1]}")
@@ -210,7 +212,8 @@ class MiniCPMV26(VisionLanguageModel, lightning.LightningModule):
     @torch.inference_mode()
     def generate(self, image: torch.Tensor, prompts: List[str]) -> List[str]:
         # We should only have a single image.
-        self.remove_hidden_hooks()
+        if hasattr(self, '_hidden_layers'):
+            self._hidden_layers.clear()
         if image.ndim == 4:
             image = image.squeeze(0)
         assert image.ndim == 3, f"Expected (3, H, W), got {image.shape}"
@@ -359,53 +362,108 @@ class MiniCPMV26(VisionLanguageModel, lightning.LightningModule):
         return inputs
     
     def _capture_hidden(self, layer_idx: int | None = None, track_grad = True):
-        """
-        Capture hidden state(s) at token position `self.pos_idx`.
-
-        layer_idx :
-            • int   – capture only that decoder block  
-            • None  – capture every block (old behaviour)
-
-        Results are stored in:
-            • self._hidden           (tensor)          if single layer
-            • self._hidden_layers    (list[tensor])    if all layers
-        """
-        # 1. clear any hooks from a previous call
+        # 1)  clear hooks from a previous call
         self.remove_hidden_hooks()
 
-        # 2. prepare storage
+        # 2)  configure storage
         if layer_idx is None:
             self._hidden_layers: list[torch.Tensor] = []
         else:
             self._hidden = None
 
-        # 3. helper that builds a hook
-        def make_hook(idx):
-            def hook(_mod, inp):                  # ⟵ pre-block hook
-                hidden = inp[0] if isinstance(inp, (tuple, list)) else inp
-                vec = hidden[:, self.pos_idx, :]
+        # ---------- helpers ---------------------------------------------------- #
+
+        def _select_vec(t: torch.Tensor) -> torch.Tensor:
+            """Return the single-token vector we care about."""
+            return t[:, self.pos_idx, :]
+
+        def _project_out(t: torch.Tensor) -> torch.Tensor:
+            """Optionally remove the steering direction."""
+            if self.use_steering_reg and getattr(self, "orthogonalise_r", False):
+                return remove_projection(t, self.r)
+            return t
+
+        # build hooks ----------------------------------------------------------- #
+
+        def make_pre_hook(idx: int):
+            def hook(_m, inp):
+                # 1. clean full activation
+                x = _project_out(inp[0] if isinstance(inp, (tuple, list)) else inp)
+                new_inp = (x, *inp[1:]) if isinstance(inp, (tuple, list)) else x
+
+                # 2. capture single-token vector
+                vec = _select_vec(x)
                 if not track_grad:
                     vec = vec.detach()
-
-                if layer_idx is None:           # collecting many
+                if layer_idx is None:
                     self._hidden_layers.append(vec)
-                elif idx == layer_idx:          # collecting one
+                elif idx == layer_idx:
                     self._hidden = vec
+
+                # 3. feed cleaned activation forward
+                return new_inp
             return hook
 
-        # 4. attach hooks
+        def make_post_hook(idx: int):
+            def hook(_m, _inp, out):
+                # 1. clean module output
+                y = _project_out(out[0] if isinstance(out, (tuple, list)) else out)
+                new_out = (y, *out[1:]) if isinstance(out, (tuple, list)) else y
+
+                # 2. capture single-token vector
+                vec = _select_vec(y)
+                if not track_grad:
+                    vec = vec.detach()
+                self._hidden_layers.append(vec)
+
+                # 3. propagate cleaned output
+                return new_out
+            return hook
+
+        # 3)  locate blocks / sub-modules -------------------------------------- #
+
+        layers = self.model.llm.model.layers           # ← Mini-CPM path
+
+        def _sub_module(block, *names):
+            """Return the first attribute that exists on the block."""
+            for n in names:
+                if hasattr(block, n):
+                    return getattr(block, n)
+            raise AttributeError(
+                f"Could not find any of {names} on {type(block).__name__}"
+            )
+        
+        attention_modules = torch.nn.ModuleList(
+            [blk.self_attn for blk in layers]
+        )
+        mlp_modules = torch.nn.ModuleList(
+            [blk.mlp for blk in layers]
+        )
+
         self._iris_handles: list = []
-        layers = self.model.llm.model.layers      # Mini-CPM path
+
         if layer_idx is None:
+            # Capture every block: pre-hook on block, post-hook on attn & mlp.
             for i, blk in enumerate(layers):
-                h = blk.register_forward_pre_hook(make_hook(i))
-                self._iris_handles.append(h)
+                self._iris_handles.append(
+                    blk.register_forward_pre_hook(make_pre_hook(i))
+                )
+                self._iris_handles.append(
+                    attention_modules[i].register_forward_hook(make_post_hook(i))
+                )
+                self._iris_handles.append(
+                    mlp_modules[i].register_forward_hook(make_post_hook(i))
+                )
         else:
+            # Capture a single block (pre-hook only, like legacy behaviour).
             blk = layers[layer_idx]
-            h = blk.register_forward_pre_hook(make_hook(layer_idx))
-            self._iris_handles.append(h)
+            self._iris_handles.append(
+                blk.register_forward_pre_hook(make_pre_hook(layer_idx))
+            )
+
     
     def remove_hidden_hooks(self):
+        """Remove any hooks created by ``_capture_hidden`` and reset buffers."""
         for h in getattr(self, "_iris_handles", []):
             h.remove()
         self._iris_handles = []
@@ -663,3 +721,18 @@ def preprocess_for_attack(
         "image_sizes": all_image_sizes,
         "tgt_sizes": all_tgt_sizes,
     }
+
+def remove_projection(x: torch.Tensor,          # (..., d_model)
+                      direction: torch.Tensor   # (d_model,)
+                      ) -> torch.Tensor:
+    """
+    Removes the component of `x` that lies along `direction`.
+    Works for tensors with arbitrary leading dimensions.
+    """
+    # d = direction / (direction.norm() + 1e-8)
+    d = d.to(dtype=x.dtype, device=x.device)
+
+    # inner-product along the last dim → shape: (...)
+    coeff = torch.einsum("...d,d->...", x, d)
+    # keepdim so broadcast works when we subtract
+    return x - coeff.unsqueeze(-1) * d

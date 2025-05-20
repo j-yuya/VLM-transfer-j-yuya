@@ -121,11 +121,12 @@ class InternVL2(VisionLanguageModel, lightning.LightningModule):
         
         if regularization_args and regularization_args["use_steering_reg"]:
             self.use_steering_reg = True
+            self.orthogonalise_r = regularization_args.get("orthogonalise_r", False)
             self.layer_idx=regularization_args["layer_idx"]
             self.pos_idx=regularization_args["pos_idx"]
             self._capture_hidden()
             r = torch.load(regularization_args["direction_path"])  
-            self.r = (r / r.norm(dim=-1, keepdim=True)).to(dtype=torch.bfloat16, device=self.model.device)
+            self.r = (r / r.norm(dim=-1, keepdim=True) + 1e-8).to(dtype=torch.bfloat16, device=self.model.device)
             self.beta = regularization_args["beta"]
         #self.already_logged_new_mask: bool = False  # For print debugigng
         #self.already_logged_text: bool = False  # For print debugigng
@@ -249,7 +250,9 @@ class InternVL2(VisionLanguageModel, lightning.LightningModule):
     @torch.inference_mode()
     def generate(self, image: torch.Tensor, prompts: List[str]) -> List[str]:
         # We should only have a single image.
-        self.remove_hidden_hooks()
+        #self.remove_hidden_hooks()
+        if hasattr(self, '_hidden_layers'):
+            self._hidden_layers.clear()
         assert image.shape[0] == 1, print(image.shape[0])
         assert image.ndim == 5, f"Expected (1, p, 3, H, W), got {image.shape}"
         # we have (1, 3, h,w) , we want (3, H, W)
@@ -349,31 +352,76 @@ class InternVL2(VisionLanguageModel, lightning.LightningModule):
         else:
             self._hidden = None
 
+        def _select_vec(t: torch.Tensor) -> torch.Tensor:
+            return t[:, self.pos_idx, :]
+        
+        def _project_out(t: torch.Tensor) -> torch.Tensor:
+            if self.use_steering_reg and getattr(self, "orthogonalise_r", False):
+                return remove_projection(t, self.r)
+            return t
+
         # 3) helper that returns a proper hook
-        def make_hook(idx):
-            def hook(_mod, inp):                  # ⟵ pre-block hook
-                hidden = inp[0] if isinstance(inp, (tuple, list)) else inp
-                vec = hidden[:, self.pos_idx, :]
+        def make_pre_hook(idx):
+            def hook(_m, inp):
+                # 1) Clean the *full* activation that will be fed into the block
+                if isinstance(inp, tuple):
+                    x = _project_out(inp[0])
+                    new_inp = (x, *inp[1:])
+                else:
+                    x = _project_out(inp)
+                    new_inp = x
+
+                # 2) Capture (optionally detached) single-token vector
+                vec = _select_vec(x)
                 if not track_grad:
                     vec = vec.detach()
-
-                if layer_idx is None:           # collecting many
+                if layer_idx is None:
                     self._hidden_layers.append(vec)
-                elif idx == layer_idx:          # collecting one
+                elif idx == layer_idx:
                     self._hidden = vec
+
+                # 3) Return the modified input so the model *uses* it
+                return new_inp
+            return hook
+        
+        def make_post_hook(idx):
+            def hook(_m, _inp, out):
+                # 1) Clean the module output
+                if isinstance(out, tuple):
+                    y = _project_out(out[0])
+                    new_out = (y, *out[1:])
+                else:
+                    y = _project_out(out)
+                    new_out = y
+
+                # 2) Capture token vector
+                vec = _select_vec(y)
+                if not track_grad:
+                    vec = vec.detach()
+                self._hidden_layers.append(vec)
+
+                # 3) Return the modified output
+                return new_out
             return hook
 
         # 4) attach hooks
         self._iris_handles: list = []
         layers = self.model.language_model.model.layers
+        attention_modules = torch.nn.ModuleList([block.attention for block in layers])
+        mlp_modules = torch.nn.ModuleList([block.feed_forward for block in layers])
+
         if layer_idx is None:
+            # capture *every* block + its attn & mlp outputs
             for i, blk in enumerate(layers):
-                h = blk.register_forward_pre_hook(make_hook(i))
-                self._iris_handles.append(h)
+                self._iris_handles.append(blk.register_forward_pre_hook(make_pre_hook(i)))
+                self._iris_handles.append(attention_modules[i]
+                                        .register_forward_hook(make_post_hook(i)))
+                self._iris_handles.append(mlp_modules[i]
+                                        .register_forward_hook(make_post_hook(i)))
         else:
+            # old single-layer behaviour (only pre-hook)
             blk = layers[layer_idx]
-            h = blk.register_forward_pre_hook(make_hook(layer_idx))
-            self._iris_handles.append(h)
+            self._iris_handles.append(blk.register_forward_pre_hook(make_pre_hook(layer_idx)))
 
     # <<< NEW / RENAMED >>>
     def remove_hidden_hooks(self):
@@ -440,6 +488,20 @@ def only_assistant_response(starting_text: str, response: str) -> str:
 
 IGNORE_INDEX = -100  # standard for ignoring in loss
 
+def remove_projection(x: torch.Tensor,          # (..., d_model)
+                      direction: torch.Tensor   # (d_model,)
+                      ) -> torch.Tensor:
+    """
+    Removes the component of `x` that lies along `direction`.
+    Works for tensors with arbitrary leading dimensions.
+    """
+    # d = direction / (direction.norm() + 1e-8)
+    d = d.to(dtype=x.dtype, device=x.device)
+
+    # inner-product along the last dim → shape: (...)
+    coeff = torch.einsum("...d,d->...", x, d)
+    # keepdim so broadcast works when we subtract
+    return x - coeff.unsqueeze(-1) * d
 
 
     

@@ -176,7 +176,7 @@ def evaluate_vlm_adversarial_examples():
         )
 
         # Only generate every 1000 optimizer steps.
-        if (run_jailbreak_dict["optimizer_step_counter"] % 1000) != 0:
+        if (run_jailbreak_dict["optimizer_step_counter"] % 500) != 0:
             continue
 
         generations_prompts_targets_evals_dict = {
@@ -217,6 +217,7 @@ def evaluate_vlm_adversarial_examples():
     # Score generations using LlamaGuard2 and HarmBench.
     for eval_model_name, eval_model_constr in [
         #("claude3opus", src.models.evaluators.Claude3OpusEvaluator),
+        ("strongreject", src.models.evaluators.StrongRejectEvaluator),
         ("harmbench", src.models.evaluators.HarmBenchEvaluator),
         ("llamaguard2", src.models.evaluators.LlamaGuard2Evaluator),
     ]:
@@ -263,6 +264,7 @@ def evaluate_vlm_adversarial_examples():
                     "target",
                     "llamaguard2",
                     "harmbench",
+                    "strongreject"
                     #"claude3opus",
                 ],
                 data=[
@@ -272,10 +274,11 @@ def evaluate_vlm_adversarial_examples():
                         target,
                         llama_guard2_eval,
                         harmbench_eval,
+                        strongreject_eval,
                         #claude3opus_eval,
                     ]
                     #for prompt, model_generation, target, llama_guard2_eval, harmbench_eval, claude3opus_eval in zip(
-                    for prompt, model_generation, target, llama_guard2_eval, harmbench_eval in zip(
+                    for prompt, model_generation, target, llama_guard2_eval, harmbench_eval, strongreject_eval in zip(
 
                         generations_prompts_targets_evals_dict["prompts"],
                         generations_prompts_targets_evals_dict["generations"],
@@ -284,6 +287,7 @@ def evaluate_vlm_adversarial_examples():
                             "judgements_llamaguard2"
                         ],
                         generations_prompts_targets_evals_dict["judgements_harmbench"],
+                        generations_prompts_targets_evals_dict["judgements_strongreject"]
                         # generations_prompts_targets_evals_dict[
                         #     "judgements_claude3opus"
                         # ],
@@ -301,6 +305,7 @@ def evaluate_vlm_adversarial_examples():
                 "loss/score_llamaguard2"
             ],
             "loss/score_model=harmbench": run_jailbreak_dict["loss/score_harmbench"],
+            "loss/score_model=strongreject": run_jailbreak_dict["loss/score_strongreject"],
             # "loss/score_model=claude3opus": run_jailbreak_dict[
             #     "loss/score_claude3opus"
             # ],
