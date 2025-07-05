@@ -10,9 +10,9 @@ parameters:
           - 1
       dataset:
         values:
+          - advbench_intern
+          - advbench_intern_dir_adv_100_more_harmful
           - advbench
-          - generated
-          - rylan_anthropic_hhh
       num_workers:
         values:
           - 4
@@ -26,7 +26,7 @@ parameters:
     parameters:
       image_initialization:
         values:
-          - trina
+          - random
       image_size:
         values:
           - 448
@@ -52,21 +52,21 @@ parameters:
           - bf16-mixed
   models_to_attack:
     values:
-      - '{''prism-reproduction-llava-v15+13b''}'
+      - '{''InternVL2-8B''}'
   n_generations:
     values:
       - 30
   n_grad_steps:
     values:
-      - 200
+      - 1000
   optimization:
     parameters:
       eps:
         values:
-          - 0.0001
+          - 0.001
       learning_rate:
         values:
-          - 0.001
+          - 0.04
       momentum:
         values:
           - 0.9

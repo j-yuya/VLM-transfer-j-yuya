@@ -11,8 +11,6 @@ parameters:
       dataset:
         values:
           - advbench
-          - generated
-          - rylan_anthropic_hhh
       num_workers:
         values:
           - 4
@@ -43,22 +41,39 @@ parameters:
           - 1
       log_image_every_n_steps:
         values:
-          - 250
+          - 100
       log_loss_every_n_steps:
         values:
           - 1
       precision:
         values:
           - bf16-mixed
+  regularization_kwargs:
+    parameters:
+      use_steering_reg:
+        values:
+          - True
+      beta:
+        values:
+          - 0.7
+      layer_idx:
+        values:
+          - 13
+      pos_idx:
+        values:
+          - -4
+      direction_path:
+        values:
+          - "/work/jcaspary/refusal_direction_image_load/pipeline/runs/internvl2_I_ref_token/harmful_complete_harmless_mmbench/0.1_-4/direction.pt"
   models_to_attack:
     values:
-      - '{''prism-reproduction-llava-v15+13b''}'
+      - '{''InternVL2-8B''}'
   n_generations:
     values:
       - 30
   n_grad_steps:
     values:
-      - 200
+      - 2000
   optimization:
     parameters:
       eps:

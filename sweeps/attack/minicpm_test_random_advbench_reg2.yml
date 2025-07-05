@@ -10,9 +10,8 @@ parameters:
           - 1
       dataset:
         values:
+          - advbench_minicpm
           - advbench
-          - generated
-          - rylan_anthropic_hhh
       num_workers:
         values:
           - 4
@@ -26,7 +25,7 @@ parameters:
     parameters:
       image_initialization:
         values:
-          - trina
+          - random
       image_size:
         values:
           - 448
@@ -50,15 +49,35 @@ parameters:
       precision:
         values:
           - bf16-mixed
+  regularization_kwargs:
+    parameters:
+      use_steering_reg:
+        values:
+          - True
+      beta:
+        values:
+          - 0.75
+      layer_idx:
+        values:
+          - 21
+      pos_idx:
+        values:
+          - -1
+      direction_path:
+        values:
+          - "/work/jcaspary/refusal_direction_image_load/pipeline/runs/minicpm/harmful_complete_harmless_mmbench/0.1_0/n_train_harmful_100/direction.pt"
+      orthogonalise_r:
+        values:
+          - False
   models_to_attack:
     values:
-      - '{''prism-reproduction-llava-v15+13b''}'
+      - '{''MiniCPM-V-2_6''}'
   n_generations:
     values:
       - 30
   n_grad_steps:
     values:
-      - 200
+      - 1000
   optimization:
     parameters:
       eps:

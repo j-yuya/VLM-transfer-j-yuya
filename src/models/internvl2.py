@@ -174,8 +174,8 @@ class InternVL2(VisionLanguageModel, lightning.LightningModule):
                 image_flags = image_flags.to(device=device),
                 labels=labels.to(device=device),
             )
-        print("LOSS")
-        print(outputs.loss.item())
+        # print("LOSS")
+        # print(outputs.loss.item())
         return outputs.loss
 
     def convert_prompts_and_maybe_targets_to_input_ids_and_attention_mask(

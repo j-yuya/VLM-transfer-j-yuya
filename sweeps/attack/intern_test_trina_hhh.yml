@@ -10,8 +10,6 @@ parameters:
           - 1
       dataset:
         values:
-          - advbench
-          - generated
           - rylan_anthropic_hhh
       num_workers:
         values:
@@ -52,13 +50,13 @@ parameters:
           - bf16-mixed
   models_to_attack:
     values:
-      - '{''prism-reproduction-llava-v15+13b''}'
+      - '{''InternVL2-8B''}'
   n_generations:
     values:
       - 30
   n_grad_steps:
     values:
-      - 200
+      - 10000
   optimization:
     parameters:
       eps:

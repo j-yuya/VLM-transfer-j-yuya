@@ -11,8 +11,6 @@ parameters:
       dataset:
         values:
           - advbench
-          - generated
-          - rylan_anthropic_hhh
       num_workers:
         values:
           - 4
@@ -26,7 +24,7 @@ parameters:
     parameters:
       image_initialization:
         values:
-          - trina
+          - random
       image_size:
         values:
           - 448
@@ -52,13 +50,13 @@ parameters:
           - bf16-mixed
   models_to_attack:
     values:
-      - '{''prism-reproduction-llava-v15+13b''}'
+      - '{''MiniCPM-V-2_6''}'
   n_generations:
     values:
       - 30
   n_grad_steps:
     values:
-      - 200
+      - 2000
   optimization:
     parameters:
       eps:

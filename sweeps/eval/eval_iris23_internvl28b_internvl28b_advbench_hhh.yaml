@@ -8,7 +8,7 @@ parameters:
         values: [1]
       dataset:
         values: [
-          "advbench",
+          #"advbench",
           "rylan_anthropic_hhh",
         ]
       num_workers:
@@ -28,11 +28,12 @@ parameters:
   model_to_eval:
     values:
       [
-      "{'cogvlm2-llama3-chat-19B'}",
-      #"{'InternVL2-8B'}",
+      # "{'cogvlm2-llama3-chat-19B'}",
+      "{'InternVL2-8B'}",
       # "{'MiniCPM-V-2_6'}",
       # "{'prism-reproduction-llava-v15+7b'}",
-      # "{'prism-reproduction-llava-v15+13b'}",
+      # "{'prism-llama3-instruct+8b+clip'}",
+      # "{'prism-clip+7b'}"
       ]
   image_kwargs:
     parameters:
@@ -48,8 +49,20 @@ parameters:
   wandb_attack_run_id:
     values:
       [
-        "j0sv9yky", #Mini CPM
-        "qi03x4tg", #Mini CPM
-        "34bzde99", #COG TRINA
-        "obetkdqg", #Intern TRINA
+        ynwvpips,
+        4bqke2yf,
+        95q5y9d7,
+        hxy3bo63,
+        1iosymgi,
+        vie8mt2z,
+        qpa0igfw,
+        hs4cibjb,
+        k0feia91,
+        r36gm400,
+        0tfareog,
+        kd8zt6bj,
+        d48rmblk,
+        aedcp48l,
+        bem2mvnt,
+        7fnkkt9y
       ]

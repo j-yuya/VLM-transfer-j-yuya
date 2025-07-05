@@ -11,8 +11,6 @@ parameters:
       dataset:
         values:
           - advbench
-          - generated
-          - rylan_anthropic_hhh
       num_workers:
         values:
           - 4

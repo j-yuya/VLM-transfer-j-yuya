@@ -22,16 +22,22 @@ data_dir, results_dir = src.analyze.setup_notebook_dir(
 
 
 sweep_ids = [
-    "zyf0lb9y",  # Prismatic with N-Choose-1 Jailbreaks, AdvBench & Rylan Anthropic HHH (Part 1)
-    "s754hflc",  # Prismatic with N-Choose-1 Jailbreaks, AdvBench & Rylan Anthropic HHH (Part 2)
-    "jl9as45o",  # Prismatic with N-Choose-1 Jailbreaks, AdvBench & Rylan Anthropic HHH (Part 3)
-    "1yoxmmrk",  # Prismatic with N-Choose-1 Jailbreaks, AdvBench & Rylan Anthropic HHH (Part 4)
-    "bjg1o5ko",  # Prismatic with N-Choose-1 Jailbreaks, AdvBench & Rylan Anthropic HHH (Part 5)
-    "8nrhoa2q",  # Prismatic with N-Choose-1 Jailbreaks, AdvBench & Rylan Anthropic HHH (Part 6)
+    "pemca1qn",
+    "mxoj3yac",
+    "ra4zt9ho",
+    "sdq4h9u2 ",
+    "3a0ltqro",
+    "vhk4p7k6",
+    "i1kdqkal",
+    "2d2wplfn",
+    "ocv3rbg7",
+    "y0qoa6w0",
+    "fxr9nu6b",
+    "30j5x091"
 ]
 
 
-wandb_username = "rylan"
+wandb_username = "julian-yuya-caspary-university-of-mannheim"
 eval_runs_configs_df = src.analyze.download_wandb_project_runs_configs(
     wandb_project_path="universal-vlm-jailbreak-eval",
     data_dir=data_dir,
@@ -149,7 +155,8 @@ eval_runs_histories_df = eval_runs_histories_df.merge(
 )
 
 unique_metrics_order = [
-    "loss/score_model=claude3opus",
+    #"loss/score_model=llamaguard2",
+    "loss/score_model=strongreject"
 ]
 
 eval_runs_histories_tall_df = eval_runs_histories_df.melt(
@@ -244,6 +251,8 @@ first_and_last_optimizer_step_df = pd.merge(
 
 
 plt.close()
+import matplotlib as mpl
+mpl.rcParams['text.usetex'] = False
 g = sns.relplot(
     data=first_and_last_optimizer_step_df,
     kind="scatter",
@@ -257,7 +266,7 @@ g = sns.relplot(
     size_order=[False, True],
     sizes=[100, 400],
     hue="Eval VLM",
-    hue_order=sorted_unique_attacked_models,
+    #hue_order=sorted_unique_attacked_models,
     col_wrap=5,
     s=250,
     aspect=0.75,
@@ -326,7 +335,7 @@ for eval_dataset in eval_runs_histories_tall_df["eval_dataset"].unique():
             aspect=0.75,
         )
         g.set_axis_labels("Gradient Step", "Harmful-Yet-Helpful")
-        g.set(xlim=(0, 50000), ylim=(0.0, 1.0))
+        g.set(xlim=(0, 2000), ylim=(0.0, 1.0))
         g.set_titles(col_template="{col_name}")
         sns.move_legend(g, "upper left", bbox_to_anchor=(1.0, 1.0))
         g.fig.suptitle(

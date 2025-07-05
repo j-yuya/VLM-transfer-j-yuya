@@ -347,6 +347,15 @@ class VLMEnsembleAttackingSystem(lightning.LightningModule):
 
                 _min = (0.0 - mean) / std        # (3,1,1)  → broadcast to (3,14,14336)
                 _max = (1.0 - mean) / std
+            elif "cogvlm2-llama3-chat-19B" in self.vlm_ensemble.vlms_dict:
+                COG_MEAN = (0.48145466, 0.4578275, 0.40821073)
+                COG_STD  = (0.26862954, 0.26130258, 0.27577711)
+
+                mean = torch.tensor(COG_MEAN, device=self.tensor_image.device, dtype=self.tensor_image.dtype)[:, None, None]
+                std  = torch.tensor(COG_STD,  device=self.tensor_image.device, dtype=self.tensor_image.dtype)[:, None, None]
+
+                _min = (0.0 - mean) / std
+                _max = (1.0 - mean) / std
             else:
                 _min = 0.0
                 _max = 1.0

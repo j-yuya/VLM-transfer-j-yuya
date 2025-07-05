@@ -10,8 +10,7 @@ parameters:
           - 1
       dataset:
         values:
-          - advbench
-          - generated
+          #- advbench
           - rylan_anthropic_hhh
       num_workers:
         values:
@@ -27,6 +26,7 @@ parameters:
       image_initialization:
         values:
           - trina
+          - random
       image_size:
         values:
           - 448
@@ -52,13 +52,18 @@ parameters:
           - bf16-mixed
   models_to_attack:
     values:
-      - '{''prism-reproduction-llava-v15+13b''}'
+      - '{''cogvlm2-llama3-chat-19B''}'
+      - '{''InternVL2-8B''}'
+      - '{''MiniCPM-V-2_6''}'
+      - '{''prism-reproduction-llava-v15+7b''}'
+      - '{''prism-llama3-instruct+8b+clip''}'
+      - '{''prism-clip+7b''}'
   n_generations:
     values:
       - 30
   n_grad_steps:
     values:
-      - 200
+      - 2000
   optimization:
     parameters:
       eps:
@@ -75,7 +80,7 @@ parameters:
           - adam
       weight_decay:
         values:
-          - 1e-05
+          - 0.00001
   seed:
     values:
       - 0
