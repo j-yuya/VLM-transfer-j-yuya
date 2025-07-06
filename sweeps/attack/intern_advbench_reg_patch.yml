@@ -1,0 +1,117 @@
+method: grid
+parameters:
+  compile:
+    values:
+      - false
+  data:
+    parameters:
+      batch_size:
+        values:
+          - 1
+      dataset:
+        values:
+          - advbench
+          - advbench_intern_dir_adv_100_more_harmful
+      num_workers:
+        values:
+          - 4
+      prefetch_factor:
+        values:
+          - 4
+      split:
+        values:
+          - train
+  image_kwargs:
+    parameters:
+      image_initialization:
+        values:
+          - trina
+          - random
+      image_size:
+        values:
+          - 448
+  lightning_kwargs:
+    parameters:
+      accumulate_grad_batches:
+        values:
+          - 4
+      gradient_clip_val:
+        values:
+          - 10
+      limit_train_batches:
+        values:
+          - 1
+      log_image_every_n_steps:
+        values:
+          - 250
+      log_loss_every_n_steps:
+        values:
+          - 1
+      precision:
+        values:
+          - bf16-mixed
+  regularization_kwargs:
+    parameters:
+      use_steering_reg:
+        values:
+          - True
+      beta:
+        values:
+          - 0.0
+          - 0.3
+          - 0.75
+      layer_idx:
+        values:
+          - 18
+      pos_idx:
+        values:
+          - -1
+      direction_path:
+        values:
+          - "/work/jcaspary/refusal_direction_image_load/pipeline/runs/6f6d72be3c7a8541d2942691c46fbd075c147352/harmful_advbench_vlm_harmless/0.1_0/n_train_harmful_100/direction.pt"
+      orthogonalise_r:
+        values:
+          - False
+  patch_attack_kwargs:          # ← NEW group
+    parameters:                      # constant for every run
+      enable:
+        values:
+          - true            # turn the feature on
+      patch_size:
+        values:
+          - 96
+          - 64           
+      center_xy:
+        values:
+          - [110, 110]  
+  models_to_attack:
+    values:
+      - '{''InternVL2-8B''}'
+  n_generations:
+    values:
+      - 30
+  n_grad_steps:
+    values:
+      - 2000
+  optimization:
+    parameters:
+      eps:
+        values:
+          - 0.0001
+      learning_rate:
+        values:
+          - 0.1
+      momentum:
+        values:
+          - 0.9
+      optimizer:
+        values:
+          - adam
+      weight_decay:
+        values:
+          - 0.00001
+  seed:
+    values:
+      - 0
+program: optimize_jailbreak_attacks_against_vlms.py
+project: universal-vlm-jailbreak

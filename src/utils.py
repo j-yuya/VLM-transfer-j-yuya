@@ -215,6 +215,111 @@ def create_minicpm_image(image_kwargs: Dict[str, Any], seed: int = 0) -> torch.T
     assert len(pixel_values.shape) == 3
     return pixel_values, tgt_sizes
 
+from torchvision.transforms import ToPILImage
+def preprocess_minicpm_image(
+    rgb_tensor: torch.Tensor,          # (3,H,W)   in [0,1]
+    image_kwargs: Dict[str, Any],
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """
+    Keep the *exact* pipeline of `create_minicpm_image` but operate on a
+    user-supplied RGB tensor instead of reading from disk or sampling
+    random noise.
+
+    Returns
+    -------
+    pixel_values : torch.Tensor   # (3,14,14336)  *same as before*
+    tgt_sizes    : torch.Tensor   # (num_slices, 2)
+    """
+    # 1. optional resize → square; MiniCPM’s processor crops/pads anyway
+    image_size   = image_kwargs["image_size"]
+    pil_image    = ToPILImage()(rgb_tensor)
+
+    # 2. run the official processor
+    processor    = AutoProcessor.from_pretrained(
+        "openbmb/MiniCPM-V-2_6", trust_remote_code=True
+    )
+    processed    = processor.image_processor(
+        [[pil_image]],
+        do_pad=True,
+        max_slice_nums=None,
+        return_tensors=TensorType.PYTORCH,
+    )
+    pixel_values = processed["pixel_values"][0][0]   # (3,14,14336)
+    tgt_sizes    = processed["tgt_sizes"][0][0]
+
+    return pixel_values, tgt_sizes
+# ──────────────────────────────────────────────────────────────
+# 2) CogVLM-2-Llama3-Chat-19B  ─────────────────────────────────
+import torchvision.transforms as T
+
+def preprocess_cog_image(
+    rgb_tensor: torch.Tensor,          # (3,H,W)  [0,1]
+    image_kwargs: Dict[str, Any],
+) -> torch.Tensor:
+    """
+    Mirrors the *trina* branch of `create_cog_image`: pad to square,
+    resize to 1344, convert to tensor (if not already) and apply the
+    CogVLM normalisation.
+    """
+    image_size   = 1344
+    C, H, W      = rgb_tensor.shape
+
+    # 1. convert → PIL to reuse pad/resize API
+    pil_image    = T.functional.to_pil_image(rgb_tensor)
+
+    # 2. symmetric pad so the longest edge stays centred
+    max_dim      = max(H, W)
+    pad_w        = (max_dim - W) // 2
+    pad_h        = (max_dim - H) // 2
+    transform    = T.Compose([
+        T.Pad((pad_w, pad_h, pad_w, pad_h), fill=0),
+        T.Resize((image_size, image_size), interpolation=T.InterpolationMode.BICUBIC),
+        T.ToTensor(),
+        T.Normalize(
+            mean=(0.48145466, 0.4578275, 0.40821073),
+            std=(0.26862954, 0.26130258, 0.27577711),
+        ),
+    ])
+    tensor = transform(pil_image)      # (3,1344,1344)
+    return tensor
+# ──────────────────────────────────────────────────────────────
+# 3) InternVL-2-8B  ────────────────────────────────────────────
+from torchvision.transforms import v2 as Tv2
+
+def preprocess_intern_image(
+    rgb_tensor: torch.Tensor,          # (3,H,W) in [0,1]
+    image_kwargs: Dict[str, Any],
+) -> torch.Tensor:
+    """
+    Replicates the *trina* branch of `create_intern_image`:
+    • centre-pad to square,
+    • resize to `image_kwargs['image_size']`,
+    • pass through `load_image_from_image`,
+    • add the leading batch dim so the final shape is (1, …, 3, P, P).
+    """
+    img_size = image_kwargs["image_size"]
+    C, H, W  = rgb_tensor.shape
+
+    pil      = T.functional.to_pil_image(rgb_tensor)
+    max_dim  = max(H, W)
+    pad_w    = (max_dim - W) // 2
+    pad_h    = (max_dim - H) // 2
+
+    transform = Tv2.Compose([
+        Tv2.Pad((pad_w, pad_h, pad_w, pad_h), fill=0),
+        Tv2.Resize((img_size, img_size)),
+    ])
+    pil_resized = transform(pil)
+
+    tensor = load_image_from_image(
+        pil_resized,
+        img_size,
+        (1, 1),         # num_patch_h, num_patch_w
+        True,           # normalize=True
+    ).unsqueeze(0)      # add batch dim → len(shape) == 5
+    return tensor
+
+
 from typing import Tuple
 
 def reconstruct_cpm_image(
@@ -346,9 +451,10 @@ def reconstruct_to_original_size(
     # Reconstruct resized image from patches
     num_x, num_y = patch_grid
     assert patches.shape[0] == num_x * num_y
+    device, dtype = patches.device, patches.dtype
 
-    mean = (0.485, 0.456, 0.406)
-    std = (0.229, 0.224, 0.225)
+    mean = torch.tensor((0.485, 0.456, 0.406), device=device, dtype=dtype)
+    std  = torch.tensor((0.229, 0.224, 0.225), device=device, dtype=dtype)
     patches = unnormalize(patches, mean, std)
 
     rows = []

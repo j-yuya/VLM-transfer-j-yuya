@@ -9,11 +9,12 @@ import wandb
 import random
 from src.models.ensemble import VLMEnsemble
 from src.models.evaluators import HarmBenchEvaluator, LlamaGuard2Evaluator
-from src.utils import create_initial_image, create_intern_image, reconstruct_to_original_size, create_cog_image, cog_reverse_image, create_minicpm_image, reconstruct_cpm_image, preprocess_model_image, load_image_from_image
+from src.utils import create_initial_image, create_intern_image, reconstruct_to_original_size, create_cog_image, cog_reverse_image, create_minicpm_image, reconstruct_cpm_image, preprocess_model_image, load_image_from_image, preprocess_cog_image,  preprocess_intern_image, preprocess_minicpm_image
 import torchvision.transforms.functional as TF
 from PIL import Image, ImageDraw, ImageFont
 import torch.nn.functional as F
-
+import torchvision.transforms as T
+to_tensor = T.ToTensor()  
 
 class AttackType(Enum):
     UNCONSTRAINED = "unconstrained"
@@ -34,6 +35,17 @@ class VLMEnsembleAttackingSystem(lightning.LightningModule):
         if "regularization_kwargs" in wandb_config.keys():
             regularization_kwargs = wandb_config["regularization_kwargs"]
             self.use_steering_reg = wandb_config["regularization_kwargs"]["use_steering_reg"]
+        self.patch_cfg   = wandb_config.get("patch_attack_kwargs", {})
+        self.use_patch   = bool(self.patch_cfg.get("enable", False))
+        if any("Intern"  in m for m in wandb_config["models_to_attack"]):
+            self._model_family = "intern"
+        elif any("cogvlm2" in m for m in wandb_config["models_to_attack"]):
+            self._model_family = "cog"
+        elif any("MiniCPM"  in m for m in wandb_config["models_to_attack"]):
+            self._model_family = "cpm"
+        else:
+            self._model_family = "generic"
+
         self.vlm_ensemble = VLMEnsemble(
             model_strs=wandb_config["models_to_attack"],
             model_generation_kwargs=wandb_config["model_generation_kwargs"],
@@ -41,6 +53,8 @@ class VLMEnsembleAttackingSystem(lightning.LightningModule):
             precision=wandb_config["lightning_kwargs"]["precision"],
             image_size=wandb_config["image_kwargs"]["image_size"]
         )
+        self.orig_H = wandb_config["image_kwargs"]["image_size"]
+        self.orig_W = wandb_config["image_kwargs"]["image_size"]
         if any("Intern" in model for model in wandb_config["models_to_attack"]):
             tensor_image: torch.Tensor = create_intern_image(
             image_kwargs=wandb_config["image_kwargs"],
@@ -70,6 +84,75 @@ class VLMEnsembleAttackingSystem(lightning.LightningModule):
         self.convert_tensor_to_pil_image = torchvision.transforms.ToPILImage()
         self.optimizer_step_counter = 0
 
+        if self.use_patch:
+            # **Never** touch self.tensor_image for geometry – it has already
+            # been pre-processed / resized.
+            H, W = self.orig_H, self.orig_W
+
+            psize = int(self.patch_cfg.get("patch_size", 32))
+
+            if self.patch_cfg.get("center_xy") not in (None, (None, None)):
+                # user-supplied absolute px coords
+                cx, cy = map(int, self.patch_cfg["center_xy"])
+            else:
+                # helper locations (extend as you add more presets)
+                loc = self.patch_cfg.get("location", "")
+                if loc == "mid_top_left_quarter":
+                    cx, cy = W // 4, H // 4
+                else:
+                    raise ValueError(f"patch_attack: unknown location '{loc}'")
+
+            half = psize // 2
+            x1, x2 = max(0, cx - half), min(W, cx + half)
+            y1, y2 = max(0, cy - half), min(H, cy + half)
+
+            m = torch.zeros((1, 1, H, W),
+                            dtype=self.tensor_image.dtype,
+                            device=self.tensor_image.device)
+            m[:, :, y1:y2, x1:x2] = 1.0
+            self.register_buffer("patch_mask_rgb", m)
+
+
+    def _tensor2rgb(self, tens: torch.Tensor) -> torch.Tensor:
+        fam = self._model_family
+
+        if fam == "intern":
+            return reconstruct_to_original_size(tens.squeeze(0))            # (3,H,W)
+
+        elif fam == "cog":
+            pil = cog_reverse_image(
+                tens, self.wandb_config["image_kwargs"]["image_size"]
+            )                                                               # PIL.Image
+            return to_tensor(pil)                                           # (3,H,W)
+
+        elif fam == "cpm":
+            return reconstruct_cpm_image(tens, self.tgt_sizes)              # (3,H,W)
+
+        else:   # generic / fallback
+            return tens[0] if tens.dim() == 4 else tens                     # (3,H,W)
+
+    def _rgb2tensor(self, rgb: torch.Tensor) -> torch.Tensor:
+        model_str    = list(self.wandb_config["models_to_attack"])[0]
+        image_kwargs = self.wandb_config["image_kwargs"]
+
+        # — MiniCPM-V-2_6 ———————————————————————————————————————
+        if "MiniCPM" in model_str:
+            pixel_vals, tgt_sizes = preprocess_minicpm_image(rgb, image_kwargs)
+            self.tgt_sizes        = tgt_sizes
+            return pixel_vals                     # (3,14,14336)
+
+        # — CogVLM-2 (Llama-3) ——————————————————————————————
+        elif "cogvlm2" in model_str:
+            return preprocess_cog_image(rgb, image_kwargs)  # (3,1344,1344)
+
+        # — InternVL-2-8B ———————————————————————————————
+        elif "Intern" in model_str:
+            return preprocess_intern_image(rgb, image_kwargs)  # (1,…,3,P,P)
+
+        # — Generic / fallback ————————————————————————————
+        else:
+            return rgb.clone() 
+        
     def configure_optimizers(self) -> Dict:
         # https://pytorch-lightning.readthedocs.io/en/latest/common/lightning_module.html#configure-optimizers
 
@@ -323,44 +406,95 @@ class VLMEnsembleAttackingSystem(lightning.LightningModule):
                         ),
                     },
                 )
+        if self.use_patch:
+            pre_step_tensor = self.tensor_image.detach().clone()
         super().optimizer_step(*args, **kwargs)
         self.optimizer_step_counter += 1
-        with torch.no_grad():
-            if "InternVL2-8B" in self.vlm_ensemble.vlms_dict.keys():
-                IMAGENET_MEAN = (0.485, 0.456, 0.406)
-                IMAGENET_STD  = (0.229, 0.224, 0.225)
+        if self.use_patch:
+            with torch.no_grad():
+                rgb_before = self._tensor2rgb(pre_step_tensor)
+                rgb_after  = self._tensor2rgb(self.tensor_image)
 
-                
-                bounds = [(0.0 - m) / s for m, s in zip(IMAGENET_MEAN, IMAGENET_STD)]
-                _min   = torch.tensor(bounds, device=self.tensor_image.device, dtype=self.tensor_image.dtype)[None, :, None, None]
-                _max   = torch.tensor([(1.0 - m) / s for m, s in zip(IMAGENET_MEAN, IMAGENET_STD)],
-                                    device=self.tensor_image.device, dtype=self.tensor_image.dtype)[None, :, None, None]
-            elif "MiniCPM-V-2_6" in self.vlm_ensemble.vlms_dict.keys():
-                CPM_MEAN = (0.5, 0.5, 0.5)
-                CPM_STD  = (0.5, 0.5, 0.5)
+                mask     = self.patch_mask_rgb          # (1,1,H,W)
+                rgb_new  = rgb_before * (1 - mask.squeeze(1)) + rgb_after * mask.squeeze(1)
 
-                device = self.tensor_image.device
-                dtype  = self.tensor_image.dtype
+                # ⬇️  ONE universal clamp, no model-specific logic needed
+                rgb_new.clamp_(0.0, 1.0)
 
-                mean = torch.tensor(CPM_MEAN, device=device, dtype=dtype)[:, None, None]  # (3,1,1)
-                std  = torch.tensor(CPM_STD,  device=device, dtype=dtype)[:, None, None]  # (3,1,1)
+                # back to model space
+                # print(f"rgb_before shape : {rgb_before.shape}")   # (3,H,W)
+                # print(f"rgb_after  shape : {rgb_after.shape}")    # (3,H,W)
+                # print(f"mask shape       : {mask.shape}")         # (1,1,H,W)
 
-                _min = (0.0 - mean) / std        # (3,1,1)  → broadcast to (3,14,14336)
-                _max = (1.0 - mean) / std
-            elif "cogvlm2-llama3-chat-19B" in self.vlm_ensemble.vlms_dict:
-                COG_MEAN = (0.48145466, 0.4578275, 0.40821073)
-                COG_STD  = (0.26862954, 0.26130258, 0.27577711)
+                # # Mask sanity: how many pixels belong to the patch?
+                # num_patch_px = mask.sum().item()
+                # H, W = rgb_before.shape[-2:]
+                # print(f"patch size       : {num_patch_px} / {H*W} px "
+                #     f"({100*num_patch_px/(H*W):.2f} %)")
 
-                mean = torch.tensor(COG_MEAN, device=self.tensor_image.device, dtype=self.tensor_image.dtype)[:, None, None]
-                std  = torch.tensor(COG_STD,  device=self.tensor_image.device, dtype=self.tensor_image.dtype)[:, None, None]
+                # # Channel-wise statistics *inside* and *outside* the patch
+                # m = mask.squeeze(1)                     # (1,H,W)
+                # m3 = m.expand_as(rgb_before)            # broadcast to (3,H,W)
 
-                _min = (0.0 - mean) / std
-                _max = (1.0 - mean) / std
-            else:
-                _min = 0.0
-                _max = 1.0
+                # def stats(name, tensor):
+                #     print(f"{name:11}  min={tensor.min():.4f}  "
+                #         f"mean={tensor.mean():.4f}  max={tensor.max():.4f}")
 
-            self.tensor_image.data = self.tensor_image.data.clamp(min=_min, max=_max)
+                # stats("before in",  rgb_before[m3.bool()])
+                # stats("after  in",  rgb_after[m3.bool()])
+                # stats("before out", rgb_before[~m3.bool()])
+                # stats("after  out", rgb_after[~m3.bool()])
+
+                # # How much did the optimiser change the patch this step?
+                # delta = (rgb_after - rgb_before) * m3
+                # stats("Δ patch", delta)
+
+                # # (Optional) check for bad values *before* the RGB clamp
+                # bad = (rgb_after < 0) | (rgb_after > 1)
+                # if bad.any():
+                #     bad_pct = 100 * bad.float().mean().item()
+                #     print(f"⚠️  {bad_pct:.2f}% of patch pixels are outside [0,1]"
+                #         " BEFORE rgb clamp")
+                self.tensor_image.data.copy_(self._rgb2tensor(rgb_new))
+                # import pdb
+                # pdb.set_trace()
+        else:
+            with torch.no_grad():
+                if "InternVL2-8B" in self.vlm_ensemble.vlms_dict.keys():
+                    IMAGENET_MEAN = (0.485, 0.456, 0.406)
+                    IMAGENET_STD  = (0.229, 0.224, 0.225)
+
+                    
+                    bounds = [(0.0 - m) / s for m, s in zip(IMAGENET_MEAN, IMAGENET_STD)]
+                    _min   = torch.tensor(bounds, device=self.tensor_image.device, dtype=self.tensor_image.dtype)[None, :, None, None]
+                    _max   = torch.tensor([(1.0 - m) / s for m, s in zip(IMAGENET_MEAN, IMAGENET_STD)],
+                                        device=self.tensor_image.device, dtype=self.tensor_image.dtype)[None, :, None, None]
+                elif "MiniCPM-V-2_6" in self.vlm_ensemble.vlms_dict.keys():
+                    CPM_MEAN = (0.5, 0.5, 0.5)
+                    CPM_STD  = (0.5, 0.5, 0.5)
+
+                    device = self.tensor_image.device
+                    dtype  = self.tensor_image.dtype
+
+                    mean = torch.tensor(CPM_MEAN, device=device, dtype=dtype)[:, None, None]  # (3,1,1)
+                    std  = torch.tensor(CPM_STD,  device=device, dtype=dtype)[:, None, None]  # (3,1,1)
+
+                    _min = (0.0 - mean) / std        # (3,1,1)  → broadcast to (3,14,14336)
+                    _max = (1.0 - mean) / std
+                elif "cogvlm2-llama3-chat-19B" in self.vlm_ensemble.vlms_dict:
+                    COG_MEAN = (0.48145466, 0.4578275, 0.40821073)
+                    COG_STD  = (0.26862954, 0.26130258, 0.27577711)
+
+                    mean = torch.tensor(COG_MEAN, device=self.tensor_image.device, dtype=self.tensor_image.dtype)[:, None, None]
+                    std  = torch.tensor(COG_STD,  device=self.tensor_image.device, dtype=self.tensor_image.dtype)[:, None, None]
+
+                    _min = (0.0 - mean) / std
+                    _max = (1.0 - mean) / std
+                else:
+                    _min = 0.0
+                    _max = 1.0
+
+                self.tensor_image.data = self.tensor_image.data.clamp(min=_min, max=_max)
 
             # dev, dtype = self.tensor_image.device, self.tensor_image.dtype
             # img_denorm = unnormalize(self.tensor_image.squeeze(0)).clamp_(0, 1) 
