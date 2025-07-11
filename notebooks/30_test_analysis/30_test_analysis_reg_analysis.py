@@ -22,22 +22,22 @@ EVAL_PROJECT           = "universal-vlm-jailbreak-eval"
 ATTACK_PROJECT         = "universal-vlm-jailbreak"
 
 # IRIS 123 Intern
-SWEEP_IDS              = [
-    "3a0ltqro",
-    "0o6ovw5r",
-    "2n9737ha",
-    "cngtdiqz",
-
-]   
-
-# IRIS 123 Mini
 # SWEEP_IDS              = [
-#     "30j5x091",
-#     "oqestcn4",
-#     "6976fsb1",
-#     "p3s80qcr"
+#     "3a0ltqro",
+#     "0o6ovw5r",
+#     "2n9737ha",
+#     "cngtdiqz",
 
 # ]   
+
+# IRIS 123 Mini
+SWEEP_IDS              = [
+    "30j5x091",
+    "oqestcn4",
+    "6976fsb1",
+    "p3s80qcr"
+
+]   
 
 # # IRIS 123 Both
 # SWEEP_IDS              = [
@@ -51,6 +51,15 @@ SWEEP_IDS              = [
 #     "p3s80qcr"
 
 # ]   
+
+
+BETA_FILTER = [0.0, 0.01, 0.2, 0.5, 0.75] 
+def filter_by_beta(df, column="beta"):
+    """Return df unchanged if the filter is empty, else keep only chosen βs."""
+    if not BETA_FILTER:                  # []  or  None  → no filtering
+        return df
+    return df[df[column].isin(BETA_FILTER)].copy()
+
 
      # ← put your sweep(s) here
 REFRESH_WANDB_DOWNLOAD = True                    # force re-download?
@@ -328,66 +337,8 @@ eval_hist_df = eval_hist_df.merge(
 # 4) Plot LOSS curves – only param‑specific (no combined y_vs_steps)
 # ────────────────────────────────────────────────────────────────────────────────
 
-sns.set_theme(style="whitegrid", font_scale=1.3)
-plt.close("all")
-
 attack_hist_df = attack_hist_df[attack_hist_df["optimizer_step_counter"] % 10 == 0]
 
-
-def plot_by_single_param(
-    df_hist: pd.DataFrame,
-    x_col: str,
-    y_col: str,
-    param: str,
-    pretty_y: str,
-    out_dir: str,
-    max_steps: int = MAX_STEPS,
-):
-    """Aggregate over all *other* hyper‑params and draw mean ± CI lines."""
-
-    df_plot = (
-        df_hist[[x_col, param, y_col]]
-        .groupby([x_col, param], as_index=False)
-        .mean()
-    )
-
-    subdir = os.path.join(out_dir, param)
-    os.makedirs(subdir, exist_ok=True)
-
-    g = sns.relplot(
-        data=df_plot,
-        kind="line",
-        x=x_col,
-        y=y_col,
-        hue=param,
-        linewidth=2.5,
-        aspect=1.5,
-        palette="tab10",
-        height=5,
-        errorbar=None,
-    )
-    g.set_axis_labels("Gradient step", pretty_y)
-    g.set(xlim=(0, max_steps))
-    g.fig.suptitle(f"{pretty_y} vs steps – grouped by “{param}”", y=1.02)
-
-    fname = f"attack_{y_col}_vs_steps_by_{param}"
-    src.plot.save_plot_with_multiple_extensions(subdir, fname)
-    plt.close(g.fig)
-
-for col, pretty in ATTACK_LOSS_METRICS.items():
-    # rename to a generic column for plotting func
-    attack_hist_df_renamed = attack_hist_df.rename(columns={col: "y"})
-    for key in ATTACK_CONFIG_KEYS:
-        if key not in attack_hist_df_renamed.columns:
-            continue
-        plot_by_single_param(
-            df_hist=attack_hist_df_renamed,
-            x_col="optimizer_step_counter",
-            y_col="y",
-            param=key,
-            pretty_y=pretty,
-            out_dir=LOSS_CURVES_DIR,
-        )
 
 # ────────────────────────────────────────────────────────────────────────────────
 # 5) Plot evaluation curves (both metrics) – unchanged
@@ -403,137 +354,6 @@ metric_long_df = (
     )
 )
 metric_long_df["metric"] = metric_long_df["metric_key"].map(EVAL_SCORE_METRICS)
-
-for key in ATTACK_CONFIG_KEYS:
-    if key not in metric_long_df.columns:
-        continue
-
-    g = sns.relplot(
-        data=metric_long_df,
-        kind="line",
-        x="optimizer_step_counter_epoch",
-        y="score",
-        hue=key,
-        style="metric",      # keep “metric” as style (size / markers only)
-        dashes=False,        # ✨ STOP seaborn from setting any dashes
-        linewidth=2.5,
-        aspect=1.6,
-        palette="tab10",
-        height=5,
-        errorbar=None,
-    )
-
-    ax = g.axes.flat[0]
-
-    # ── make β-curves visually distinct ──────────────────────────────────────────
-    for ln in ax.lines:
-        try:
-            β = float(ln.get_label())      # label should be the β value
-        except ValueError:                 # not a β curve → skip
-            continue
-
-        if β == 0.0:
-            ln.set_linewidth(3.5)
-            ln.set_dashes([])              # solid
-        else:
-            ln.set_linewidth(1.3)
-            ln.set_dashes([7, 4])          # long-dash pattern
-
-    # ── single, tidy legend ───────────────────────────────────────────────────────
-    handles, labels = ax.get_legend_handles_labels()
-    skip = {key, "metric"}                 # drop seaborn’s variable headings
-    handles, labels = zip(*[(h, l) for h, l in zip(handles, labels) if l not in skip])
-
-    g._legend.remove()
-    g.fig.legend(
-        handles, labels,
-        title=r"$\beta$" if key == "beta" else key,
-        loc="center left",
-        bbox_to_anchor=(1.02, 0.5),
-        frameon=False,
-    )
-    g.fig.subplots_adjust(right=0.80)
-
-    # usual labels / limits / save …
-    g.set_axis_labels("Gradient step", "Evaluation score")
-    g.set(xlim=(0, MAX_STEPS), ylim=(0.0, 1.0))
-    g.fig.suptitle(f"Evaluation scores vs steps – grouped by “{key}”", y=1.02)
-
-    subdir = os.path.join(SCORE_CURVES_DIR, key)
-    os.makedirs(subdir, exist_ok=True)
-    fname = f"eval_both_metrics_vs_steps_by_{key}"
-    src.plot.save_plot_with_multiple_extensions(subdir, fname)
-    plt.close(g.fig)
-# ─────────────────────────────────────────────────────────────────────────────
-# 5)  Evaluation curves grouped by β   (one panel, colour = β)
-# ─────────────────────────────────────────────────────────────────────────────
-if "beta" in ATTACK_CONFIG_KEYS:
-    beta_df     = metric_long_df.copy()
-    beta_levels = sorted(beta_df["beta"].unique())
-
-    # base plot – no dashes, no markers
-    g = sns.relplot(
-        data=beta_df,
-        kind="line",
-        x="optimizer_step_counter_epoch",
-        y="score",
-        hue="beta",
-        hue_order=beta_levels,
-        style="metric",       # only markers/‐style for “metric”
-        markers=False,
-        dashes=False,         # <-- IMPORTANT: no automatic dash logic
-        linewidth=2.0,
-        palette="tab10",
-        height=5,
-        aspect=1.6,
-        errorbar=None,
-        legend="full",
-    )
-
-    ax = g.axes.flat[0]
-
-    # ── manual line styling ───────────────────────────────────────────────
-    import matplotlib.lines as mlines
-
-    for ln in ax.get_lines():
-        if not isinstance(ln, mlines.Line2D):
-            continue
-        # skip legend proxy artists (no data points)
-        if len(ln.get_xdata()) == 0:
-            continue
-
-        try:
-            β = float(ln.get_label())
-        except (ValueError, TypeError):
-            continue
-
-        if β == 0.0:                              # solid, thicker
-            ln.set_linewidth(3.5)
-            ln.set_linestyle("-")
-        else:                                     # long dash, thinner
-            ln.set_linewidth(1.3)
-            ln.set_linestyle((0, (7, 4)))         # (offset, on/off pattern)
-
-    # ── tidy legend ───────────────────────────────────────────────────────
-    g._legend.set_title(r"$\beta$")
-    g._legend.set_frame_on(False)
-
-    # ── labels / spacing / save ───────────────────────────────────────────
-    g.fig.subplots_adjust(right=0.78)
-    g.set_axis_labels("Gradient step", "Evaluation score")
-    g.set(xlim=(0, MAX_STEPS), ylim=(0.0, 1.0))
-    g.fig.suptitle("Evaluation scores vs steps – grouped by $\\beta$", y=1.02)
-
-    subdir = os.path.join(SCORE_CURVES_DIR, "beta")
-    os.makedirs(subdir, exist_ok=True)
-    src.plot.save_plot_with_multiple_extensions(
-        subdir, "eval_both_metrics_vs_steps_by_beta"
-    )
-    plt.close(g.fig)
-
-print("✅ Plots saved under:")
-print(f"   • Loss curves      → {LOSS_CURVES_DIR}")
-print(f"   • Evaluation curves→ {SCORE_CURVES_DIR}")
 
 # ────────────────────────────────────────────────────────────────────────────────
 # 6)  Curves per (attack_dataset, β)  →   loss_reg , loss_ce , Strong-Reject
@@ -614,6 +434,22 @@ def place_legend_top(grid, ncol=2, dy=0.02):
 # ------------------------------------------------------------------
 # 6-b  Tidy format  &  plot  (row = β , col = dataset)
 # ------------------------------------------------------------------
+# ── Friendly display names for every dataset we might ever see ──────────────
+DATASET_ALIAS = {
+    "advbench":                                   "AdvBench",
+    "advbench_intern_dir_adv_100_more_harmful":   "AdvBench Self-Labeled (InternVL2)",
+    "advbench_minicpm_dir_adv_100":               "AdvBench Self-Labeled (MiniCPM-V 2.6)",
+}
+
+def pretty_ds(name: str) -> str:
+    """
+    Return a tidy display string for a raw `attack_dataset` value.
+
+    • If the name is in DATASET_ALIAS → use that.
+    • Otherwise fall back to the original, replacing '_' with a space.
+    """
+    return DATASET_ALIAS.get(name, name.replace("_", " "))
+
 loss_long = (
     attack_hist_df
     .melt(
@@ -624,15 +460,17 @@ loss_long = (
     )
     .dropna(subset=["loss"])                               # drop undefined rows
 )
+loss_long  = filter_by_beta(loss_long)   
+loss_long["dataset_disp"] = loss_long["attack_dataset"].apply(pretty_ds)
 
-sns.set_theme(style="whitegrid", font_scale=1.2)
+
 g = sns.relplot(
     data=loss_long,
     kind="line",
     x="optimizer_step_counter",
     y="loss",
     hue="component",
-    col="attack_dataset",
+    col="dataset_disp",
     row="beta",
     facet_kws=dict(margin_titles=True),
     linewidth=2.2,
@@ -641,7 +479,11 @@ g = sns.relplot(
     errorbar=None,
     palette="tab10",
 )
-g.fig.subplots_adjust(top=0.78)                  # shrink facet area
+g.set_titles(                  # keep row titles nice too
+    col_template="{col_name}",
+    row_template=r"$\beta = {row_name}$",
+)
+g.fig.subplots_adjust(top=0.73)                  # shrink facet area
 g.fig.suptitle("Loss-components vs steps   (facet: dataset × β)", y=0.98)
 place_legend_top(g, ncol=2, dy=0.08)            # drop legend just below title
 g.set_axis_labels("Gradient step", "Unscaled loss")
@@ -662,11 +504,17 @@ sr_df = metric_long_df.query(
     "metric_key == 'loss/score_model=strongreject'"
 ).copy()
 
+alias = {
+    "advbench": "AdvBench",
+    "advbench_intern_dir_adv_100_more_harmful": "Advbench Self-Labeled (InternVL2)",
+}
+sr_df    = filter_by_beta(sr_df)  
+sr_df["dataset_disp"] = sr_df["attack_dataset"].apply(pretty_ds)
+
+
 # nicer ordering: sort β numerically, datasets alphabetically
 beta_order    = sorted(sr_df["beta"].dropna().unique())
-dataset_order = sorted(sr_df["attack_dataset"].dropna().unique())
-
-sns.set_theme(style="whitegrid", font_scale=1.3)
+dataset_order = sorted(sr_df["dataset_disp"].dropna().unique())
 plt.close("all")
 
 legend_cols = max(len(beta_order), len(dataset_order))
@@ -678,7 +526,7 @@ g = sns.relplot(
     y="score",
     hue="beta",
     hue_order=beta_order,
-    style="attack_dataset",
+    style="dataset_disp",
     style_order=dataset_order,
     linewidth=2.5,
     palette="tab10",
@@ -686,8 +534,11 @@ g = sns.relplot(
     aspect=1.7,
     errorbar=None,
 )
-g.fig.subplots_adjust(top=0.78)                    # shrink facet area
-g.fig.suptitle("Loss-components vs steps   (facet: dataset × β)", y=0.98)
+g.set_titles(                  # keep row titles nice too
+    col_template="{col_name}",
+    row_template=r"$\beta = {row_name}$",
+)
+g.fig.subplots_adjust(top=0.73)                    # shrink facet area
 place_legend_top(g, ncol=2, dy=0.08)            # drop legend just below title
 g.set_axis_labels("Gradient step", "Strong-Reject score")
 g.set(xlim=(0, MAX_STEPS), ylim=(0.0, 1.0))
@@ -743,17 +594,18 @@ def pretty(col_name: str) -> str:
     base = "β · reg" if prefix.endswith("reg") else "(1-β) · CE"
     return f"{base} ({model})" if include_model else base
 
+
+weighted_long = filter_by_beta(weighted_long)
+weighted_long["dataset_disp"] = weighted_long["attack_dataset"].apply(pretty_ds)
 weighted_long["component"] = weighted_long["component_raw"].map(pretty)
 weighted_long = weighted_long.drop(columns="component_raw")   # cleanup
-
-sns.set_theme(style="whitegrid", font_scale=1.2)
 g = sns.relplot(
     data=weighted_long,
     kind="line",
     x="optimizer_step_counter",
     y="loss",
     hue="component",
-    col="attack_dataset",
+    col="dataset_disp",
     row="beta",
     facet_kws=dict(margin_titles=True),
     linewidth=2.2,
@@ -762,7 +614,11 @@ g = sns.relplot(
     errorbar=None,
     palette="tab10",
 )
-g.fig.subplots_adjust(top=0.78)             # shrink facet area
+g.set_titles(                  # keep row titles nice too
+    col_template="{col_name}",
+    row_template=r"$\beta = {row_name}$",
+)
+g.fig.subplots_adjust(top=0.73)             # shrink facet area
 g.fig.suptitle("Loss-components vs steps   (facet: dataset × β)", y=0.98)
 place_legend_top(g, ncol=2, dy=0.08)            # drop legend just below title
 g.set_axis_labels("Gradient step", "Weighted loss")
