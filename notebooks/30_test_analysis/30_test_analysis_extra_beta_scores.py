@@ -51,6 +51,14 @@ SWEEP_IDS              = [
 
 # ]   
 
+# IRIS 123 hhh both
+SWEEP_IDS              = [
+    "0o6ovw5r",
+    "oqestcn4",
+    "cngtdiqz",
+    "p3s80qcr"
+]   
+
      # ← put your sweep(s) here
 REFRESH_WANDB_DOWNLOAD = True                    # force re-download?
 FINISHED_ONLY          = True                    # ignore running/failed runs?
@@ -316,27 +324,41 @@ attack_hist_df = attack_hist_df.merge(
 # 3) Build evaluation long‑form DF and merge metadata
 # ────────────────────────────────────────────────────────────────────────────────
 
-eval_hist_df = eval_hist_df.merge(
-    eval_cfg_df[["eval_run_id", "attack_run_id"]], on="eval_run_id"
-).merge(
-    attack_cfg_df[["attack_run_id", "attack_config_label", *ATTACK_CONFIG_KEYS]],
-    on="attack_run_id",
+eval_hist_df = (
+    eval_hist_df
+      .merge(                       # attach the attack-run ID
+          eval_cfg_df[["eval_run_id",
+                       "attack_run_id",
+                       "eval_model_str"]],     # ← keep this column!
+          on="eval_run_id")
+      .merge(                       # attach β, ε, etc.
+          attack_cfg_df[["attack_run_id",
+                          "attack_config_label",
+                          *ATTACK_CONFIG_KEYS]],
+          on="attack_run_id")
 )
-
 attack_hist_df = attack_hist_df[attack_hist_df["optimizer_step_counter"] % 10 == 0]
 
 # ────────────────────────────────────────────────────────────────────────────────
 # 5) Plot evaluation curves (both metrics) – unchanged
 # ────────────────────────────────────────────────────────────────────────────────
 
+EVAL_MODEL_COL = "model_to_eval"          # or "model_to_eval" if you never renamed
+EVAL_MODEL_COL = "eval_model_str"    # single source of truth
+
 metric_long_df = (
     eval_hist_df
-    .melt(
-        id_vars=["optimizer_step_counter_epoch", "attack_config_label", *ATTACK_CONFIG_KEYS],
-        value_vars=list(EVAL_SCORE_METRICS.keys()),
-        var_name="metric_key",
-        value_name="score",
-    )
+      .melt(
+          id_vars=[
+              "optimizer_step_counter_epoch",
+              "attack_config_label",
+              *ATTACK_CONFIG_KEYS,
+              EVAL_MODEL_COL,        # ← now guaranteed to exist
+          ],
+          value_vars=list(EVAL_SCORE_METRICS.keys()),
+          var_name="metric_key",
+          value_name="score",
+      )
 )
 metric_long_df["metric"] = metric_long_df["metric_key"].map(EVAL_SCORE_METRICS)
 
@@ -492,3 +514,84 @@ for ds in dataset_order:
 print("✅ Plots saved under:")
 print(f"   • Loss curves      → {LOSS_CURVES_DIR}")
 print(f"   • Evaluation curves→ {SCORE_CURVES_DIR}")
+
+from textwrap import shorten             # just for nicer legends
+
+
+def build_label(row):
+    ds   = row["attack_dataset"]
+    eval = row[EVAL_MODEL_COL]
+
+    if ds == "advbench_minicpm_dir_adv_100":
+        return pretty_ds(ds)
+
+    if ds == "advbench_intern_dir_adv_100_more_harmful":
+        return pretty_ds(ds)
+
+    if ds == "advbench":
+        if eval == "MiniCPM-V-2_6":
+            return "AdvBench – MiniCPM-V-2_6"
+        if eval == "InternVL2-8B":
+            return "AdvBench – InternVL2-8B"
+
+    return None
+
+dfa = metric_long_df.copy()
+dfa["agg_label"] = dfa.apply(build_label, axis=1)
+dfa = dfa.dropna(subset=["agg_label"])                # keep the 4 curves
+dfa = dfa.query("metric_key == 'loss/score_model=strongreject'")  # one metric
+# ── 3)  Aggregate over β --------------------------------------------------
+agg_df = (
+    dfa
+    .groupby(["optimizer_step_counter_epoch", "agg_label"], as_index=False)
+    .agg(score=("score", "mean"))
+)
+
+label_order = [
+    pretty_ds("advbench_minicpm_dir_adv_100"),
+    pretty_ds("advbench_intern_dir_adv_100_more_harmful"),
+    "AdvBench – MiniCPM-V-2_6",
+    "AdvBench – InternVL2-8B",
+]
+agg_df["agg_label"] = pd.Categorical(agg_df["agg_label"],
+                                     categories=label_order,
+                                     ordered=True)
+
+# ── 4)  Single-panel plot -----------------------------------------------
+g = sns.relplot(
+    data   = agg_df,
+    kind   = "line",
+    x      = "optimizer_step_counter_epoch",
+    y      = "score",
+    hue    = "agg_label",
+    hue_order = label_order,
+    palette   = "tab10",
+    linewidth = 2.5,
+    height    = 6,
+    aspect    = 1.4,
+    legend    = "full",
+    errorbar  = None,
+)
+
+
+# tidy up
+g.set_axis_labels("Gradient step", "Evaluation score")
+g.set(xlim=(0, MAX_STEPS), ylim=(0.0, 1.0))
+g.fig.suptitle("Evaluation scores vs steps",
+               y=1.02)
+
+# legend outside
+g.fig.subplots_adjust(right=0.8)
+leg = g._legend
+leg.set_title("Dataset")
+leg.set_frame_on(False)
+leg.set_bbox_to_anchor((1.02, 0.5))
+leg.set_loc("center left")
+
+# save to disk
+subdir = os.path.join(SCORE_CURVES_DIR, "aggregated_datasets")
+os.makedirs(subdir, exist_ok=True)
+src.plot.save_plot_with_multiple_extensions(subdir,
+                                            "eval_scores_vs_steps__4datasets")
+
+plt.close(g.fig)
